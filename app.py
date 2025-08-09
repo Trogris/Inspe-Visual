@@ -409,5 +409,6 @@ with tabs[3]:
 # --- TAB 5: Nova análise ---
 with tabs[4]:
     st.markdown("### Nova análise")
-    st.info("Redefinindo a análise e retornando para **Upload**...")
-    _reset_analysis()
+    st.info("Clique no botão abaixo para limpar tudo e retornar à aba **Upload**.")
+    if st.button("Nova análise", type="primary", key="btn_reset_from_tab"):
+        _reset_analysis()
