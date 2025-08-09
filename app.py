@@ -31,6 +31,10 @@ THUMB_WIDTH  = 160    # miniatura padrão
 VIDEO_COLS   = [1, 3] # ~25% da largura (altura do player fica menor)
 TZ_BR = ZoneInfo("America/Sao_Paulo")
 
+# ========= Banner (opcional) =========
+st.sidebar.success("BUILD: " + datetime.now(TZ_BR).strftime("%Y-%m-%d %H:%M:%S"))
+st.sidebar.caption("Streamlit: " + st.__version__)
+
 # ========= Estado =========
 K_UPLOAD    = "upload_video_v1"
 K_TECNICO   = "input_tecnico_v1"
@@ -257,19 +261,25 @@ def build_zip_package(state: dict) -> tuple[bytes, str]:
     return zip_bytes, zip_filename
 
 def _reset_analysis():
-    """Limpa toda a base: deleta pasta temporária e reseta session_state."""
-    state = st.session_state.get(K_STATE, {})
-    temp_dir = state.get("temp_dir")
+    """Remove a pasta temporária, limpa TODO o session_state e recarrega a página."""
     try:
+        state = st.session_state.get(K_STATE, {})
+        temp_dir = state.get("temp_dir")
         if temp_dir and os.path.isdir(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
     except Exception:
-        pass  # não bloqueia reset se não conseguir remover
-    st.session_state[K_STATE] = _initial_state()
-    st.experimental_rerun()
+        pass
+
+    st.session_state.clear()  # limpa widgets e estados
+
+    # Após limpar, o rerun volta à primeira aba (Upload)
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
 
 # ========= Layout (tabs fixas) =========
-tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
+tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório", "Nova análise"])
 
 # --- TAB 1: Upload ---
 with tabs[0]:
@@ -335,10 +345,6 @@ with tabs[0]:
                 })
                 st.success("Análise concluída! Vá para as abas de Pré-visualização e Frames.")
 
-    # Botão Nova análise logo abaixo do "Enviar e Analisar"
-    if st.button("Nova análise", type="primary", use_container_width=False, key="btn_reset_v1"):
-        _reset_analysis()
-
 # --- TAB 2: Pré-visualização ---
 with tabs[1]:
     st.markdown("### 2) Pré-visualização do vídeo")
@@ -403,3 +409,9 @@ with tabs[3]:
         )
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
+
+# --- TAB 5: Nova análise ---
+with tabs[4]:
+    st.markdown("### Nova análise")
+    st.info("Redefinindo a análise e retornando para **Upload**...")
+    _reset_analysis()
