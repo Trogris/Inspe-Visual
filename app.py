@@ -15,7 +15,7 @@ import numpy as np
 from PIL import Image
 
 # =========================
-# Pequenos ajustes de performance/estabilidade
+# Performance/estabilidade
 # =========================
 try:
     cv2.setNumThreads(2)  # 1 ou 2 ajuda em CPU compartilhada
@@ -25,12 +25,12 @@ except Exception:
 # =========================
 # Parâmetros fáceis de ajustar
 # =========================
-NUM_FRAMES   = 10     # manter 10 frames
-TARGET_WIDTH = 640    # redimensionamento dos frames durante a extração
-GRID_COLS    = 5      # nº de colunas na grade
+NUM_FRAMES   = 10     # mantém 10 frames
+TARGET_WIDTH = 640    # redimensionamento na extração
+GRID_COLS    = 5      # nº de colunas da grade
 PER_PAGE     = 12     # frames por página
-THUMB_WIDTH  = 160    # ***metade do tamanho anterior*** (miniatura padrão)
-VIDEO_COLS   = [1, 1] # ***metade da largura*** para o player (usa só a 1ª coluna)
+THUMB_WIDTH  = 160    # miniatura padrão (metade do tamanho anterior)
+VIDEO_COLS   = [1, 1] # player ocupa ~50% da largura (usa a 1ª coluna)
 
 # =========================
 # Banner de build (opcional)
@@ -39,7 +39,7 @@ st.sidebar.success("BUILD: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 st.sidebar.caption("Streamlit: " + st.__version__)
 
 # =========================
-# Chaves e estado (estáveis)
+# Chaves e estado
 # =========================
 K_UPLOAD = "upload_video_v1"
 K_TECNICO = "input_tecnico_v1"
@@ -112,7 +112,7 @@ def _frame_to_np(fr):
             arr = arr[:, :, :3]
         if arr.dtype != np.uint8:
             arr = arr.astype(np.uint8, copy=False)
-        return arr
+        return np.ascontiguousarray(arr)
     else:
         return None
 
@@ -124,7 +124,40 @@ def _frame_to_np(fr):
         arr = arr.astype(np.uint8, copy=False)
     if arr.ndim != 3 or arr.shape[2] != 3:
         return None
-    return arr
+    return np.ascontiguousarray(arr)
+
+def _ensure_rgb_uint8(arr: np.ndarray) -> np.ndarray:
+    """Garante HxWx3, dtype=uint8, memória contígua."""
+    if arr is None or not isinstance(arr, np.ndarray):
+        return None
+    if arr.ndim == 2:
+        arr = np.stack([arr, arr, arr], axis=-1)
+    if arr.ndim != 3 or arr.shape[2] not in (3, 4):
+        return None
+    if arr.shape[2] == 4:
+        arr = arr[:, :, :3]
+    if arr.dtype != np.uint8:
+        arr = arr.astype(np.uint8, copy=False)
+    return np.ascontiguousarray(arr)
+
+def _safe_show_image(fr, width_px: int, fallback_caption: str):
+    """Mostra o frame com fallback para bytes PNG caso st.image rejeite o array."""
+    arr = _frame_to_np(fr)
+    arr = _ensure_rgb_uint8(arr)
+    if arr is None or arr.size == 0:
+        st.warning(f"Não foi possível mostrar o {fallback_caption}")
+        return
+    w = int(max(1, width_px))
+    try:
+        st.image(arr, caption=fallback_caption, width=w, use_container_width=False)
+    except Exception:
+        try:
+            im = Image.fromarray(arr)
+            buf = io.BytesIO()
+            im.save(buf, format="PNG", optimize=True)
+            st.image(buf.getvalue(), caption=fallback_caption, width=w, use_container_width=False)
+        except Exception:
+            st.warning(f"Falha ao renderizar {fallback_caption}.")
 
 def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, target_width: int = TARGET_WIDTH):
     """Extrai N frames distribuídos ao longo do vídeo (mantendo PNG) com pequenos reforços de robustez."""
@@ -136,7 +169,10 @@ def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, tar
         return [], 0.0
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 0
+    total_frames = int(cv2.VideoCapture(video_path).get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    # usa o handle atual para evitar novo open:
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
     if fps <= 0 or total_frames <= 0:
         cap.release()
         return [], 0.0
@@ -266,8 +302,8 @@ with tabs[1]:
     st.markdown("### 2) Pré-visualização do vídeo (50% da largura)")
     state = st.session_state[K_STATE]
     if state["temp_video_path"] and os.path.exists(state["temp_video_path"]):
-        cols = st.columns(VIDEO_COLS)  # duas colunas iguais → 50% da largura
-        with cols[0]:  # usa apenas a primeira coluna (metade da largura da página)
+        cols = st.columns(VIDEO_COLS)  # duas colunas → 50%
+        with cols[0]:  # usa só a primeira coluna
             st.video(state["temp_video_path"], format="video/mp4", start_time=0)
             st.caption(f"Arquivo: {state['filename']} — Duração: {round(state['duration'], 2)}s")
     else:
@@ -279,7 +315,7 @@ with tabs[2]:
     state = st.session_state[K_STATE]
     frames = state["frames"]
     if frames:
-        # Controles de página e tamanho (slider já inicia em 160 px)
+        # Header com paginação
         top = st.container()
         with top:
             c1, c2, c3 = st.columns([1, 1, 2])
@@ -288,39 +324,25 @@ with tabs[2]:
             with c2:
                 st.write(f"Duração: **{round(state['duration'], 2)}s**")
             with c3:
+                total_pages = max(1, (len(frames) + PER_PAGE - 1) // PER_PAGE)
                 current_page = st.session_state.get(K_PAGE, 1)
                 st.session_state[K_PAGE] = st.number_input(
-                    "Página",
-                    min_value=1,
-                    max_value=max(1, (len(frames) + PER_PAGE - 1) // PER_PAGE),
-                    value=min(current_page, max(1, (len(frames) + PER_PAGE - 1) // PER_PAGE)),
-                    step=1,
-                    key="page_selector_v1"
+                    "Página", min_value=1, max_value=total_pages,
+                    value=min(current_page, total_pages),
+                    step=1, key="page_selector_v1"
                 )
 
-        thumb_w = st.slider(
-            "Tamanho das miniaturas (px)",
-            120, 320, THUMB_WIDTH, 10, key="thumb_w_v1"
-        )
+        thumb_w = st.slider("Tamanho das miniaturas (px)", 120, 320, THUMB_WIDTH, 10, key="thumb_w_v1")
 
         start = (st.session_state[K_PAGE] - 1) * PER_PAGE
         end = start + PER_PAGE
         subset = frames[start:end]
 
-        cols = st.columns(GRID_COLS)  # grade fixa (estável)
+        cols = st.columns(GRID_COLS)  # grade fixa
         for i, fr in enumerate(subset):
             with cols[i % GRID_COLS]:
-                arr = _frame_to_np(fr)  # normaliza para evitar TypeError
-                if arr is None:
-                    st.warning(f"Não foi possível mostrar o Frame {fr.get('frame_number', i+1)}")
-                    continue
-
-                st.image(
-                    arr,
-                    caption=f"Frame {int(fr.get('frame_number', i+1))} — t={str(fr.get('timestamp','?'))}s",
-                    width=int(thumb_w),          # ***metade do tamanho padrão***
-                    use_container_width=False
-                )
+                caption = f"Frame {int(fr.get('frame_number', i+1))} — t={str(fr.get('timestamp','?'))}s"
+                _safe_show_image(fr, int(thumb_w), caption)
     else:
         st.info("Nenhum frame disponível. Faça o upload na aba **Upload**.")
 
