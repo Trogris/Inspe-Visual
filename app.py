@@ -1,518 +1,209 @@
-from flask import Flask, render_template_string, request, jsonify, send_file
+
 import os
+import io
 import base64
+import tempfile
+from datetime import datetime
+
 import cv2
 import numpy as np
-from datetime import datetime
 from PIL import Image
-import io
 
-app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['FRAMES_FOLDER'] = 'frames'
-app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB
+import streamlit as st
 
-# Criar pastas necessárias
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs(app.config['FRAMES_FOLDER'], exist_ok=True)
+st.set_page_config(page_title="Analisador de Vídeo Técnico", layout="wide")
 
-# Template HTML
-HTML_TEMPLATE = '''
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Analisador de Vídeo Técnico</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .container {
-            max-width: 1000px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-        }
-        h1 {
-            text-align: center;
-            color: #333;
-            margin-bottom: 30px;
-            font-size: 2.5em;
-        }
-        .form-group {
-            margin-bottom: 20px;
-        }
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: bold;
-            color: #555;
-        }
-        input[type="text"], input[type="file"] {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #ddd;
-            border-radius: 8px;
-            font-size: 16px;
-        }
-        input[type="file"] {
-            padding: 10px;
-        }
-        button {
-            background: linear-gradient(45deg, #667eea, #764ba2);
-            color: white;
-            border: none;
-            padding: 15px 30px;
-            border-radius: 8px;
-            font-size: 16px;
-            cursor: pointer;
-            margin: 10px 5px;
-        }
-        button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-        }
-        .video-container {
-            margin: 20px 0;
-            text-align: center;
-        }
-        video {
-            max-width: 100%;
-            border-radius: 8px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        }
-        .frames-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin: 20px 0;
-        }
-        .frame-item {
-            text-align: center;
-            background: #f8f9fa;
-            padding: 10px;
-            border-radius: 8px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        }
-        .frame-image {
-            width: 100%;
-            height: 120px;
-            object-fit: cover;
-            border-radius: 5px;
-            margin-bottom: 8px;
-        }
-        .success { 
-            color: #28a745; 
-            font-weight: bold; 
-            background: #d4edda;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 15px 0;
-        }
-        .error { 
-            color: #dc3545; 
-            font-weight: bold;
-            background: #f8d7da;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 15px 0;
-        }
-        .hidden { display: none; }
-        .report {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 8px;
-            margin: 20px 0;
-        }
-        .report h3 {
-            color: #333;
-            margin-bottom: 15px;
-        }
-        .report-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid #eee;
-        }
-        .loading {
-            text-align: center;
-            padding: 20px;
-        }
-        .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #667eea;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 10px;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🎥 Analisador de Vídeo Técnico</h1>
-        
-        <form id="videoForm" enctype="multipart/form-data">
-            <div class="form-group">
-                <label for="tecnico">Nome do Técnico:</label>
-                <input type="text" id="tecnico" name="tecnico" required>
-            </div>
-            
-            <div class="form-group">
-                <label for="serie">Número de Série do Equipamento:</label>
-                <input type="text" id="serie" name="serie" required>
-            </div>
-            
-            <div class="form-group">
-                <label for="video">Selecionar Vídeo (20-30 segundos):</label>
-                <input type="file" id="video" name="video" accept="video/*" required>
-                <small>Formatos: MP4, MOV, AVI, MKV, WMV | Máximo: 200MB</small>
-            </div>
-            
-            <button type="submit">📤 Enviar e Analisar</button>
-        </form>
-        
-        <div id="loading" class="loading hidden">
-            <div class="spinner"></div>
-            <p>Processando vídeo e extraindo frames...</p>
-        </div>
-        
-        <div id="result" class="hidden">
-            <div class="success">
-                <strong>✅ Vídeo processado com sucesso!</strong>
-            </div>
-            
-            <div class="video-container">
-                <h3>📹 Vídeo Enviado:</h3>
-                <video id="videoPlayer" controls>
-                    Seu navegador não suporta reprodução de vídeo.
-                </video>
-            </div>
-            
-            <div>
-                <h3>🖼️ Frames Extraídos (10 frames):</h3>
-                <div class="frames-grid" id="framesGrid">
-                    <!-- Frames reais serão inseridos aqui -->
-                </div>
-            </div>
-            
-            <div class="report" id="reportSection">
-                <h3>📋 Relatório de Análise</h3>
-                <div id="reportContent">
-                    <!-- Relatório será inserido aqui -->
-                </div>
-            </div>
-            
-            <button onclick="downloadReport()">📄 Baixar Relatório</button>
-            <button onclick="newAnalysis()">🔄 Nova Análise</button>
-        </div>
-    </div>
+K_UPLOAD = "upload_video_v1"
+K_TECNICO = "input_tecnico_v1"
+K_SERIE = "input_serie_v1"
+K_STATE = "state_video_meta_v1"
+K_PAGE = "pagination_page_v1"
 
-    <script>
-        document.getElementById('videoForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            
-            const formData = new FormData();
-            const tecnico = document.getElementById('tecnico').value;
-            const serie = document.getElementById('serie').value;
-            const videoFile = document.getElementById('video').files[0];
-            
-            if (!videoFile) {
-                alert('Por favor, selecione um vídeo!');
-                return;
-            }
-            
-            // Validar tamanho
-            if (videoFile.size > 200 * 1024 * 1024) {
-                alert('Arquivo muito grande! Máximo 200MB.');
-                return;
-            }
-            
-            formData.append('tecnico', tecnico);
-            formData.append('serie', serie);
-            formData.append('video', videoFile);
-            
-            // Mostrar loading
-            document.getElementById('loading').classList.remove('hidden');
-            const button = document.querySelector('button[type="submit"]');
-            button.textContent = '⏳ Processando...';
-            button.disabled = true;
-            
-            fetch('/upload', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                document.getElementById('loading').classList.add('hidden');
-                if (data.success) {
-                    showResult(data);
-                } else {
-                    alert('Erro: ' + data.error);
-                }
-            })
-            .catch(error => {
-                document.getElementById('loading').classList.add('hidden');
-                alert('Erro no upload: ' + error);
-            })
-            .finally(() => {
-                button.textContent = '📤 Enviar e Analisar';
-                button.disabled = false;
-            });
-        });
-        
-        function showResult(data) {
-            // Mostrar seção de resultado
-            document.getElementById('result').classList.remove('hidden');
-            
-            // Configurar player de vídeo
-            const video = document.getElementById('videoPlayer');
-            video.src = '/video/' + data.filename;
-            
-            // Mostrar frames reais
-            showFrames(data.frames);
-            
-            // Gerar relatório
-            generateReport(data);
-            
-            // Scroll para resultado
-            document.getElementById('result').scrollIntoView({ behavior: 'smooth' });
-        }
-        
-        function showFrames(frames) {
-            const grid = document.getElementById('framesGrid');
-            grid.innerHTML = '';
-            
-            frames.forEach((frame, index) => {
-                const frameDiv = document.createElement('div');
-                frameDiv.className = 'frame-item';
-                
-                frameDiv.innerHTML = `
-                    <img src="data:image/jpeg;base64,${frame.image}" 
-                         alt="Frame ${index + 1}" 
-                         class="frame-image">
-                    <small><strong>Frame ${index + 1}</strong><br>
-                    Tempo: ${frame.timestamp}s</small>
-                `;
-                
-                grid.appendChild(frameDiv);
-            });
-        }
-        
-        function generateReport(data) {
-            const reportContent = document.getElementById('reportContent');
-            reportContent.innerHTML = `
-                <div class="report-item">
-                    <span>Técnico Responsável:</span>
-                    <span>${data.tecnico}</span>
-                </div>
-                <div class="report-item">
-                    <span>Número de Série:</span>
-                    <span>${data.serie}</span>
-                </div>
-                <div class="report-item">
-                    <span>Arquivo de Vídeo:</span>
-                    <span>${data.filename}</span>
-                </div>
-                <div class="report-item">
-                    <span>Tamanho:</span>
-                    <span>${(data.size / (1024*1024)).toFixed(1)} MB</span>
-                </div>
-                <div class="report-item">
-                    <span>Duração:</span>
-                    <span>${data.duration} segundos</span>
-                </div>
-                <div class="report-item">
-                    <span>Frames Extraídos:</span>
-                    <span>10 frames</span>
-                </div>
-                <div class="report-item">
-                    <span>Data/Hora:</span>
-                    <span>${data.timestamp}</span>
-                </div>
-            `;
-        }
-        
-        function downloadReport() {
-            window.open('/download-report', '_blank');
-        }
-        
-        function newAnalysis() {
-            document.getElementById('result').classList.add('hidden');
-            document.getElementById('videoForm').reset();
-            document.querySelector('h1').scrollIntoView({ behavior: 'smooth' });
-        }
-    </script>
-</body>
-</html>
-'''
+if K_STATE not in st.session_state:
+    st.session_state[K_STATE] = {
+        "filename": None,
+        "temp_video_path": None,
+        "duration": 0.0,
+        "num_frames": 0,
+        "frames": [],
+        "timestamp_run": None,
+        "tecnico": "",
+        "serie": "",
+    }
+if K_PAGE not in st.session_state:
+    st.session_state[K_PAGE] = 1
 
-def extract_frames_from_video(video_path, num_frames=10):
-    """Extrai frames reais do vídeo usando OpenCV"""
-    try:
-        cap = cv2.VideoCapture(video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        duration = total_frames / fps if fps > 0 else 0
-        
-        frames = []
-        frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
-        
-        for i, frame_idx in enumerate(frame_indices):
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame = cap.read()
-            
-            if ret:
-                # Converter BGR para RGB
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                # Redimensionar se necessário
-                height, width = frame_rgb.shape[:2]
-                if width > 400:
-                    new_width = 400
-                    new_height = int(height * (new_width / width))
-                    frame_rgb = cv2.resize(frame_rgb, (new_width, new_height))
-                
-                # Converter para PIL Image
-                pil_image = Image.fromarray(frame_rgb)
-                
-                # Converter para base64
-                buffer = io.BytesIO()
-                pil_image.save(buffer, format='JPEG', quality=85)
-                img_base64 = base64.b64encode(buffer.getvalue()).decode()
-                
-                timestamp = round(frame_idx / fps, 1) if fps > 0 else i * (duration / num_frames)
-                
-                frames.append({
-                    'image': img_base64,
-                    'timestamp': timestamp,
-                    'frame_number': i + 1
-                })
-        
+ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"}
+
+def allowed_file(name: str) -> bool:
+    if not name:
+        return False
+    ext = os.path.splitext(name)[1].lower()
+    return ext in ALLOWED_EXTENSIONS
+
+def extract_frames_from_video(video_path: str, num_frames: int = 10, target_width: int = 640):
+    frames = []
+    duration = 0.0
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return [], 0.0
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.get(cv2.CAP_PROP_FRAME_COUNT) else 0
+    if fps <= 0 or total_frames <= 0:
         cap.release()
-        return frames, duration
-        
-    except Exception as e:
-        print(f"Erro ao extrair frames: {str(e)}")
-        return [], 0
+        return [], 0.0
 
-@app.route('/')
-def index():
-    return render_template_string(HTML_TEMPLATE)
+    duration = total_frames / fps
+    import numpy as _np
+    indexes = _np.linspace(0, total_frames - 1, num=num_frames, dtype=int)
 
-@app.route('/upload', methods=['POST'])
-def upload_video():
-    try:
-        tecnico = request.form.get('tecnico')
-        serie = request.form.get('serie')
-        video_file = request.files.get('video')
-        
-        if not video_file:
-            return jsonify({'success': False, 'error': 'Nenhum arquivo enviado'})
-        
-        # Salvar arquivo
-        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{video_file.filename}"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        video_file.save(filepath)
-        
-        # Extrair frames reais
-        frames, duration = extract_frames_from_video(filepath)
-        
-        if not frames:
-            return jsonify({'success': False, 'error': 'Falha ao extrair frames do vídeo'})
-        
-        file_size = os.path.getsize(filepath)
-        
-        return jsonify({
-            'success': True,
-            'tecnico': tecnico,
-            'serie': serie,
-            'filename': filename,
-            'size': file_size,
-            'duration': round(duration, 1),
-            'frames': frames,
-            'timestamp': datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+    for i, idx in enumerate(indexes):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            continue
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        h, w, _ = frame_rgb.shape
+        if w > target_width:
+            new_w = target_width
+            new_h = int(h * (target_width / w))
+            frame_rgb = cv2.resize(frame_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        pil_img = Image.fromarray(frame_rgb)
+        buff = io.BytesIO()
+        pil_img.save(buff, format="PNG", optimize=True)
+        png_bytes = buff.getvalue()
+
+        timestamp = round(idx / fps, 2)
+        frames.append({
+            "png_bytes": png_bytes,
+            "timestamp": timestamp,
+            "frame_number": int(i + 1),
         })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': f'Erro no processamento: {str(e)}'})
 
-@app.route('/video/<filename>')
-def serve_video(filename):
-    try:
-        return send_file(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-    except:
-        return "Vídeo não encontrado", 404
+    cap.release()
+    return frames, duration
 
-@app.route('/download-report')
-def download_report():
-    try:
-        report_content = f"""
-RELATÓRIO DE ANÁLISE DE VÍDEO TÉCNICO
-===================================
+def build_report_text(state: dict) -> str:
+    lines = []
+    lines.append("RELATÓRIO DE ANÁLISE DE VÍDEO TÉCNICO")
+    lines.append("=" * 35)
+    lines.append(f"Data/Hora: {state.get('timestamp_run', '')}")
+    lines.append(f"Técnico: {state.get('tecnico', '')}")
+    lines.append(f"Nº de Série: {state.get('serie', '')}")
+    lines.append(f"Arquivo: {state.get('filename', '')}")
+    lines.append(f"Duração (s): {round(state.get('duration', 0.0), 2)}")
+    lines.append("")
+    lines.append("FRAMES EXTRAÍDOS:")
+    for f in state.get("frames", []):
+        lines.append(f"- Frame {f['frame_number']:02d} | t={f['timestamp']}s")
+    return "\n".join(lines)
 
-Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
+tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
 
-INFORMAÇÕES BÁSICAS:
-- Técnico Responsável: [Preenchido pelo usuário]
-- Número de Série: [Preenchido pelo usuário]
-- Arquivo de Vídeo: [Nome do arquivo]
+with tabs[0]:
+    st.markdown("### 1) Envie o vídeo e os dados")
+    col1, col2 = st.columns(2)
+    with col1:
+        tecnico = st.text_input("Nome do Técnico", key=K_TECNICO)
+    with col2:
+        serie = st.text_input("Número de Série do Equipamento", key=K_SERIE)
 
-ANÁLISE TÉCNICA:
-- Frames Extraídos: 10 frames reais
-- Duração: [Calculada automaticamente]
-- Tamanho do Arquivo: [MB]
-- Formato: [Detectado automaticamente]
+    video_file = st.file_uploader(
+        "Selecionar Vídeo (20-30s, até 200MB)",
+        type=[e.strip(".") for e in ALLOWED_EXTENSIONS],
+        key=K_UPLOAD
+    )
 
-CHECKLIST DE VERIFICAÇÃO:
-□ Equipamento claramente visível no vídeo
-□ Todos os componentes principais identificados
-□ Qualidade de imagem adequada para análise
-□ Duração apropriada (20-30 segundos)
-□ Ângulos de filmagem corretos
-□ Iluminação adequada
-□ Foco correto em todos os frames
-□ Ausência de obstruções visuais
-□ Componentes em posição correta
-□ Equipamento em estado final de montagem
+    processar = st.button("📤 Enviar e Analisar", use_container_width=True, key="btn_enviar_v1")
+    if processar:
+        if not video_file or not video_file.name:
+            st.error("Nenhum arquivo enviado.")
+        elif not allowed_file(video_file.name):
+            st.error("Formato não suportado.")
+        else:
+            import tempfile as _tempfile
+            tmpdir = _tempfile.mkdtemp(prefix="vid_")
+            safe_name = os.path.basename(video_file.name).replace(" ", "_")
+            video_path = os.path.join(tmpdir, f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}")
+            with open(video_path, "wb") as f:
+                f.write(video_file.read())
 
-OBSERVAÇÕES TÉCNICAS:
-_________________________________
-_________________________________
-_________________________________
+            frames, duration = extract_frames_from_video(video_path, num_frames=10)
+            if not frames:
+                st.error("Falha ao extrair frames. Verifique o codec do vídeo.")
+            else:
+                st.session_state[K_STATE] = {
+                    "filename": safe_name,
+                    "temp_video_path": video_path,
+                    "duration": float(duration),
+                    "num_frames": len(frames),
+                    "frames": frames,
+                    "timestamp_run": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                    "tecnico": tecnico,
+                    "serie": serie,
+                }
+                st.success("Análise concluída! Vá para as abas de Pré-visualização e Frames.")
 
-APROVAÇÃO:
-□ Equipamento APROVADO para próxima etapa
-□ Equipamento REPROVADO - necessita correções
+with tabs[1]:
+    st.markdown("### 2) Pré-visualização do vídeo")
+    state = st.session_state[K_STATE]
+    if state["temp_video_path"] and os.path.exists(state["temp_video_path"]):
+        st.video(state["temp_video_path"])
+        st.caption(f"Arquivo: {state['filename']} — Duração: {round(state['duration'],2)}s")
+    else:
+        st.info("Envie um vídeo na aba **Upload**.")
 
-Assinatura do Técnico: _______________
+with tabs[2]:
+    st.markdown("### 3) Frames extraídos")
+    state = st.session_state[K_STATE]
+    frames = state["frames"]
+    if frames:
+        per_page = 8
+        total = len(frames)
+        pages = max(1, (total + per_page - 1) // per_page)
 
-Data: _______________
-"""
-        
-        # Salvar relatório temporário
-        report_path = '/tmp/relatorio_video_tecnico.txt'
-        with open(report_path, 'w', encoding='utf-8') as f:
-            f.write(report_content)
-        
-        return send_file(report_path, as_attachment=True, 
-                        download_name='relatorio_analise_video_tecnico.txt')
-        
-    except Exception as e:
-        return f"Erro ao gerar relatório: {str(e)}", 500
+        ctop = st.container()
+        with ctop:
+            c1, c2, c3 = st.columns([1,1,2])
+            with c1:
+                st.write(f"Total de frames: **{total}**")
+            with c2:
+                st.write(f"Duração: **{round(state['duration'], 2)}s**")
+            with c3:
+                st.session_state[K_PAGE] = st.number_input(
+                    "Página", min_value=1, max_value=pages,
+                    value=min(st.session_state[K_PAGE], pages),
+                    step=1, key="page_selector_v1"
+                )
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080, debug=False)
+        start = (st.session_state[K_PAGE]-1) * per_page
+        end = start + per_page
+        subset = frames[start:end]
 
+        cols = st.columns(4)
+        for i, fr in enumerate(subset):
+            with cols[i % 4]:
+                st.image(fr["png_bytes"], caption=f"Frame {fr['frame_number']} — t={fr['timestamp']}s", use_container_width=True)
+    else:
+        st.info("Nenhum frame disponível. Faça o upload na aba **Upload**.")
+
+with tabs[3]:
+    st.markdown("### 4) Relatório")
+    state = st.session_state[K_STATE]
+    if state["frames"]:
+        report = build_report_text(state)
+        st.text_area("Prévia do relatório", report, height=260, key="report_preview_v1")
+        st.download_button(
+            "📥 Baixar relatório (.txt)",
+            data=report.encode("utf-8"),
+            file_name="relatorio_analise_video_tecnico.txt",
+            mime="text/plain",
+            key="dl_report_v1"
+        )
+    else:
+        st.info("Gere uma análise primeiro na aba **Upload**.")
