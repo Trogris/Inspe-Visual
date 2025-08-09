@@ -1,12 +1,9 @@
 import streamlit as st
 st.set_page_config(page_title="Analisador de Vídeo Técnico", layout="wide")
 
-# =========================
-# Imports
-# =========================
+# ========= Imports =========
 import os
 import io
-import base64
 import tempfile
 from datetime import datetime
 
@@ -14,33 +11,25 @@ import cv2
 import numpy as np
 from PIL import Image
 
-# =========================
-# Performance/estabilidade
-# =========================
+# ========= Performance / estabilidade =========
 try:
     cv2.setNumThreads(2)  # 1 ou 2 ajuda em CPU compartilhada
 except Exception:
     pass
 
-# =========================
-# Parâmetros fáceis de ajustar
-# =========================
-NUM_FRAMES   = 10     # mantém 10 frames
+# ========= Parâmetros =========
+NUM_FRAMES   = 10     # manter 10 frames
 TARGET_WIDTH = 640    # redimensionamento na extração
-GRID_COLS    = 5      # nº de colunas da grade
+GRID_COLS    = 5      # nº de colunas na grade
 PER_PAGE     = 12     # frames por página
-THUMB_WIDTH  = 160    # miniatura padrão (metade do tamanho)
-VIDEO_COLS   = [1, 3] # ~25% da largura (altura ~metade por ser responsivo)
+THUMB_WIDTH  = 160    # miniatura padrão (~metade)
+VIDEO_COLS   = [1, 3] # ~25% da largura (altura do player fica ~metade)
 
-# =========================
-# Banner de build (opcional)
-# =========================
+# ========= Banner (opcional) =========
 st.sidebar.success("BUILD: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 st.sidebar.caption("Streamlit: " + st.__version__)
 
-# =========================
-# Chaves e estado
-# =========================
+# ========= Estado =========
 K_UPLOAD = "upload_video_v1"
 K_TECNICO = "input_tecnico_v1"
 K_SERIE = "input_serie_v1"
@@ -53,7 +42,7 @@ if K_STATE not in st.session_state:
         "temp_video_path": None,
         "duration": 0.0,
         "num_frames": 0,
-        "frames": [],  # [{arr, png_bytes, timestamp, frame_number}]
+        "frames": [],  # [{arr, png_bytes, timestamp, frame_number, shape, dtype}]
         "timestamp_run": None,
         "tecnico": "",
         "serie": "",
@@ -61,105 +50,19 @@ if K_STATE not in st.session_state:
 if K_PAGE not in st.session_state:
     st.session_state[K_PAGE] = 1
 
-# =========================
-# Utilidades
-# =========================
+# ========= Utilidades =========
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"}
 
 def allowed_file(name: str) -> bool:
     if not name:
         return False
-    ext = os.path.splitext(name)[1].lower()
-    return ext in ALLOWED_EXTENSIONS
-
-def _frame_to_np(fr):
-    """
-    Converte arr/png_bytes/jpg_bytes/base64/PIL/ndarray -> NumPy RGB uint8 (H,W,3).
-    Prioriza 'arr' extraído para evitar redecodificações e TypeError.
-    """
-    # 1) prioriza o array pronto salvo na extração
-    arr = fr.get("arr")
-    if isinstance(arr, np.ndarray):
-        # normaliza ndarray para RGB uint8
-        if arr.ndim == 2:
-            arr = np.stack([arr, arr, arr], axis=-1)
-        if arr.ndim == 3 and arr.shape[2] in (3, 4):
-            if arr.shape[2] == 4:
-                arr = arr[:, :, :3]
-            if arr.dtype != np.uint8:
-                arr = arr.astype(np.uint8, copy=False)
-            return np.ascontiguousarray(arr)
-
-    data = fr.get("jpg_bytes") or fr.get("png_bytes") or fr.get("image")
-    if data is None:
-        return None
-
-    # base64 -> bytes
-    if isinstance(data, str):
-        try:
-            data = base64.b64decode(data)
-        except Exception:
-            return None
-
-    # memoryview/bytearray -> bytes
-    if isinstance(data, (memoryview, bytearray)):
-        data = bytes(data)
-
-    # bytes -> PIL
-    if isinstance(data, (bytes,)):
-        try:
-            img = Image.open(io.BytesIO(data))
-            img.load()  # materializa
-        except Exception:
-            return None
-    elif isinstance(data, Image.Image):
-        img = data
-    elif isinstance(data, np.ndarray):
-        arr = data
-        if arr.ndim == 2:
-            arr = np.stack([arr, arr, arr], axis=-1)
-        if arr.ndim != 3 or arr.shape[2] not in (3, 4):
-            return None
-        if arr.shape[2] == 4:
-            arr = arr[:, :, :3]
-        if arr.dtype != np.uint8:
-            arr = arr.astype(np.uint8, copy=False)
-        return np.ascontiguousarray(arr)
-    else:
-        return None
-
-    # PIL -> RGB ndarray uint8
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    arr = np.asarray(img)
-    if arr.dtype != np.uint8:
-        arr = arr.astype(np.uint8, copy=False)
-    if arr.ndim != 3 or arr.shape[2] != 3:
-        return None
-    return np.ascontiguousarray(arr)
-
-def _safe_show_image(fr, width_px: int, fallback_caption: str):
-    """Mostra o frame com fallback para bytes PNG caso st.image rejeite o array."""
-    arr = _frame_to_np(fr)
-    if arr is None or arr.size == 0:
-        st.warning(f"Não foi possível mostrar o {fallback_caption}")
-        return
-    w = int(max(1, width_px))
-    try:
-        st.image(arr, caption=fallback_caption, width=w, use_container_width=False)
-    except Exception:
-        try:
-            im = Image.fromarray(arr)
-            buf = io.BytesIO()
-            im.save(buf, format="PNG", optimize=True)
-            st.image(buf.getvalue(), caption=fallback_caption, width=w, use_container_width=False)
-        except Exception:
-            st.warning(f"Falha ao renderizar {fallback_caption}.")
+    return os.path.splitext(name)[1].lower() in ALLOWED_EXTENSIONS
 
 def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, target_width: int = TARGET_WIDTH):
     """
-    Extrai N frames distribuídos ao longo do vídeo (mantendo PNG) e salva também o array RGB ('arr')
-    para exibição robusta e rápida.
+    Extrai N frames ao longo do vídeo.
+    Exibição usa SEMPRE 'arr' (NumPy RGB uint8 contíguo).
+    'png_bytes' fica apenas para download.
     """
     frames = []
     duration = 0.0
@@ -178,7 +81,7 @@ def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, tar
     indexes = np.linspace(0, total_frames - 1, num=num_frames, dtype=int)
 
     for i, idx in enumerate(indexes):
-        # Tenta por frame; se falhar, fallback por tempo (MSEC)
+        # Seek por frame -> fallback por tempo
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
         ok, frame = cap.read()
         if not ok or frame is None:
@@ -198,28 +101,27 @@ def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, tar
             new_h = int(h * (target_width / w))
             frame_rgb = cv2.resize(frame_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        # Guarda também o array RGB contíguo (para render estável)
+        # Arr RGB uint8 contíguo (base para exibição)
         arr = np.ascontiguousarray(frame_rgb, dtype=np.uint8)
 
-        # PNG bytes (mantém seu formato original)
-        pil_img = Image.fromarray(arr)
+        # Bytes PNG (para download)
         buff = io.BytesIO()
-        pil_img.save(buff, format="PNG", optimize=True)
+        Image.fromarray(arr).save(buff, format="PNG", optimize=True)
         png_bytes = buff.getvalue()
 
-        timestamp = round(idx / fps, 2)
         frames.append({
-            "arr": arr,  # << novo: base preferida para exibição
+            "arr": arr,
             "png_bytes": png_bytes,
-            "timestamp": timestamp,
+            "timestamp": round(idx / fps, 2),
             "frame_number": int(i + 1),
+            "shape": tuple(arr.shape),     # debug opcional
+            "dtype": str(arr.dtype),       # debug opcional
         })
 
     cap.release()
     return frames, duration
 
 def build_report_text(state: dict) -> str:
-    """Gera o texto do relatório a partir do estado atual."""
     lines = []
     lines.append("RELATÓRIO DE ANÁLISE DE VÍDEO TÉCNICO")
     lines.append("=" * 35)
@@ -234,12 +136,21 @@ def build_report_text(state: dict) -> str:
         lines.append(f"- Frame {f['frame_number']:02d} | t={f['timestamp']}s")
     return "\n".join(lines)
 
-# =========================
-# Layout ESTÁVEL (tabs fixas)
-# =========================
+def _show_arr(fr, width_px: int, caption: str):
+    """Renderiza SEMPRE via array RGB uint8 contíguo."""
+    arr = fr.get("arr", None)
+    if not isinstance(arr, np.ndarray) or arr.ndim != 3 or arr.shape[2] != 3:
+        st.warning(f"Frame inválido para exibição: {caption}")
+        return
+    if arr.dtype != np.uint8:
+        arr = arr.astype(np.uint8, copy=False)
+    arr = np.ascontiguousarray(arr)
+    st.image(arr, caption=caption, width=int(max(1, width_px)), use_container_width=False)
+
+# ========= Layout (tabs fixas) =========
 tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
 
-# ---------- TAB 1: Upload ----------
+# --- TAB 1: Upload ---
 with tabs[0]:
     st.markdown("### 1) Envie o vídeo e os dados")
     col1, col2 = st.columns(2)
@@ -298,7 +209,7 @@ with tabs[0]:
                 st.session_state[K_PAGE] = 1
                 st.success("Análise concluída! Vá para as abas de Pré-visualização e Frames.")
 
-# ---------- TAB 2: Pré-visualização ----------
+# --- TAB 2: Pré-visualização ---
 with tabs[1]:
     st.markdown("### 2) Pré-visualização do vídeo (~metade da altura)")
     state = st.session_state[K_STATE]
@@ -310,9 +221,9 @@ with tabs[1]:
     else:
         st.info("Envie um vídeo na aba **Upload**.")
 
-# ---------- TAB 3: Frames ----------
+# --- TAB 3: Frames ---
 with tabs[2]:
-    st.markdown("### 3) Frames extraídos (miniaturas 50%)")
+    st.markdown("### 3) Frames extraídos (miniaturas ~50%)")
     state = st.session_state[K_STATE]
     frames = state["frames"]
     if frames:
@@ -343,11 +254,23 @@ with tabs[2]:
         for i, fr in enumerate(subset):
             with cols[i % GRID_COLS]:
                 caption = f"Frame {int(fr.get('frame_number', i+1))} — t={str(fr.get('timestamp','?'))}s"
-                _safe_show_image(fr, int(thumb_w), caption)
+                try:
+                    _show_arr(fr, int(thumb_w), caption)
+                except Exception as e:
+                    st.warning(f"Falha ao renderizar {caption}: {type(e).__name__}")
+
+        # (Opcional) botão para baixar o primeiro frame como PNG para teste
+        f0 = subset[0] if subset else None
+        if f0 and isinstance(f0.get("png_bytes"), (bytes, bytearray)):
+            st.download_button(
+                "⬇️ Baixar primeiro frame desta página (PNG)",
+                data=f0["png_bytes"], file_name=f"frame_{f0['frame_number']:02d}.png",
+                mime="image/png", key=f"dl_page_{st.session_state[K_PAGE]}"
+            )
     else:
         st.info("Nenhum frame disponível. Faça o upload na aba **Upload**.")
 
-# ---------- TAB 4: Relatório ----------
+# --- TAB 4: Relatório ---
 with tabs[3]:
     st.markdown("### 4) Relatório")
     state = st.session_state[K_STATE]
