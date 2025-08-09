@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import zipfile
 import re
 from pathlib import Path
-import shutil  # << para remover a pasta temporária
+import shutil
 
 import cv2
 import numpy as np
@@ -31,26 +31,33 @@ THUMB_WIDTH  = 160    # miniatura padrão
 VIDEO_COLS   = [1, 3] # ~25% da largura (altura do player fica menor)
 TZ_BR = ZoneInfo("America/Sao_Paulo")
 
-# ========= Estado =========
-K_UPLOAD = "upload_video_v1"
-K_TECNICO = "input_tecnico_v1"
-K_SERIE = "input_serie_v1"
-K_CONTRATO = "input_contrato_v1"
-K_STATE = "state_video_meta_v1"
+# ========= Banner (opcional) =========
+st.sidebar.success("BUILD: " + datetime.now(TZ_BR).strftime("%Y-%m-%d %H:%M:%S"))
+st.sidebar.caption("Streamlit: " + st.__version__)
 
-if K_STATE not in st.session_state:
-    st.session_state[K_STATE] = {
-        "temp_dir": None,          # << novo: guardamos a pasta temp para limpeza completa
+# ========= Estado =========
+K_UPLOAD    = "upload_video_v1"
+K_TECNICO   = "input_tecnico_v1"
+K_SERIE     = "input_serie_v1"
+K_CONTRATO  = "input_contrato_v1"
+K_STATE     = "state_video_meta_v1"
+
+def _initial_state():
+    return {
+        "temp_dir": None,          # pasta temporária para limpeza completa
         "filename": None,
         "temp_video_path": None,
         "duration": 0.0,
         "num_frames": 0,
-        "frames": [],  # [{arr, png_bytes, timestamp, frame_number, shape, dtype}]
+        "frames": [],              # [{arr, png_bytes, timestamp, frame_number, shape, dtype}]
         "timestamp_run": None,
         "tecnico": "",
         "serie": "",
         "contrato": "",
     }
+
+if K_STATE not in st.session_state:
+    st.session_state[K_STATE] = _initial_state()
 
 # ========= Utilidades =========
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"}
@@ -208,14 +215,12 @@ def build_zip_package(state: dict) -> tuple[bytes, str]:
     """
     Monta um .zip em memória com:
       /<CONTRATO>_<SERIE>/
-        relatorio_analise_video_tecnico.txt (inclui Técnico, Série e Contrato)
+        relatorio_analise_video_tecnico.txt
         <video_original>
         frames/frame_01.png ... frame_10.png
-    Retorna (zip_bytes, zip_filename).
     """
     serie_slug = _slugify(state.get("serie", ""))
     contrato_slug = _slugify(state.get("contrato", ""))
-    # pasta inclui contrato e série, como pedido
     folder_slug = f"{contrato_slug}_{serie_slug}".strip("_") or "pacote"
     base_dir = f"{folder_slug}/"
 
@@ -252,9 +257,20 @@ def build_zip_package(state: dict) -> tuple[bytes, str]:
                 zf.writestr(base_dir + f"frames/frame_{n:02d}.png", bytes(png))
 
     zip_bytes = buf.getvalue()
-    # nome do arquivo zip mantém também contrato+série
     zip_filename = f"pacote_{folder_slug}.zip"
     return zip_bytes, zip_filename
+
+def _reset_analysis():
+    """Limpa toda a base: deleta pasta temporária e reseta session_state."""
+    state = st.session_state.get(K_STATE, {})
+    temp_dir = state.get("temp_dir")
+    try:
+        if temp_dir and os.path.isdir(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+    except Exception:
+        pass  # não bloqueia reset se não conseguir remover
+    st.session_state[K_STATE] = _initial_state()
+    st.experimental_rerun()
 
 # ========= Layout (tabs fixas) =========
 tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
@@ -284,8 +300,10 @@ with tabs[0]:
             st.error("Formato não suportado.")
         else:
             tmpdir = tempfile.mkdtemp(prefix="vid_")
-            st.session_state[K_STATE]["temp_dir"] = tmpdir  # << guarda a pasta temp p/ limpar no reset
             safe_name = os.path.basename(video_file.name).replace(" ", "_")
+            # guarda a pasta temp para limpeza posterior
+            st.session_state[K_STATE]["temp_dir"] = tmpdir
+
             video_path = os.path.join(tmpdir, f"{datetime.now(TZ_BR).strftime('%Y%m%d_%H%M%S')}_{safe_name}")
             with open(video_path, "wb") as f:
                 f.write(video_file.read())
@@ -308,8 +326,7 @@ with tabs[0]:
             if not frames:
                 st.error("Falha ao extrair frames. Verifique o codec do vídeo.")
             else:
-                st.session_state[K_STATE] = {
-                    "temp_dir": tmpdir,
+                st.session_state[K_STATE].update({
                     "filename": safe_name,
                     "temp_video_path": video_path,
                     "duration": float(duration),
@@ -319,8 +336,12 @@ with tabs[0]:
                     "tecnico": tecnico,
                     "serie": serie,
                     "contrato": contrato,
-                }
+                })
                 st.success("Análise concluída! Vá para as abas de Pré-visualização e Frames.")
+
+    # Botão Nova análise logo abaixo do "Enviar e Analisar"
+    if st.button("Nova análise", type="primary", use_container_width=False, key="btn_reset_v1"):
+        _reset_analysis()
 
 # --- TAB 2: Pré-visualização ---
 with tabs[1]:
@@ -384,25 +405,5 @@ with tabs[3]:
             mime="application/zip",
             key="dl_zip_v1"
         )
-
-        # ---- Nova análise ----
-        st.divider()
-        if st.button("Nova análise", type="primary", use_container_width=False):
-            # 1) apaga pasta temporária se existir
-            try:
-                temp_dir = st.session_state.get(K_STATE, {}).get("temp_dir")
-                if temp_dir and os.path.isdir(temp_dir):
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-            except Exception:
-                pass
-
-            # 2) limpa TODOS os estados (inclui uploader/inputs/slider)
-            st.session_state.clear()
-
-            # 3) recarrega — por padrão abrirá na primeira aba (Upload)
-            try:
-                st.rerun()
-            except Exception:
-                st.experimental_rerun()
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
