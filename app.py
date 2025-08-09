@@ -29,8 +29,8 @@ NUM_FRAMES   = 10     # mantém 10 frames
 TARGET_WIDTH = 640    # redimensionamento na extração
 GRID_COLS    = 5      # nº de colunas da grade
 PER_PAGE     = 12     # frames por página
-THUMB_WIDTH  = 160    # miniatura padrão (metade do tamanho anterior)
-VIDEO_COLS   = [1, 1] # player ocupa ~50% da largura (usa a 1ª coluna)
+THUMB_WIDTH  = 160    # miniatura padrão (metade do tamanho)
+VIDEO_COLS   = [1, 3] # ~25% da largura (altura ~metade por ser responsivo)
 
 # =========================
 # Banner de build (opcional)
@@ -53,7 +53,7 @@ if K_STATE not in st.session_state:
         "temp_video_path": None,
         "duration": 0.0,
         "num_frames": 0,
-        "frames": [],  # [{png_bytes, timestamp, frame_number}]
+        "frames": [],  # [{arr, png_bytes, timestamp, frame_number}]
         "timestamp_run": None,
         "tecnico": "",
         "serie": "",
@@ -74,9 +74,22 @@ def allowed_file(name: str) -> bool:
 
 def _frame_to_np(fr):
     """
-    Converte png_bytes/jpg_bytes/base64/PIL/ndarray -> NumPy RGB uint8 (H,W,3).
-    Evita TypeError no st.image por tipos/modes inesperados.
+    Converte arr/png_bytes/jpg_bytes/base64/PIL/ndarray -> NumPy RGB uint8 (H,W,3).
+    Prioriza 'arr' extraído para evitar redecodificações e TypeError.
     """
+    # 1) prioriza o array pronto salvo na extração
+    arr = fr.get("arr")
+    if isinstance(arr, np.ndarray):
+        # normaliza ndarray para RGB uint8
+        if arr.ndim == 2:
+            arr = np.stack([arr, arr, arr], axis=-1)
+        if arr.ndim == 3 and arr.shape[2] in (3, 4):
+            if arr.shape[2] == 4:
+                arr = arr[:, :, :3]
+            if arr.dtype != np.uint8:
+                arr = arr.astype(np.uint8, copy=False)
+            return np.ascontiguousarray(arr)
+
     data = fr.get("jpg_bytes") or fr.get("png_bytes") or fr.get("image")
     if data is None:
         return None
@@ -103,7 +116,6 @@ def _frame_to_np(fr):
         img = data
     elif isinstance(data, np.ndarray):
         arr = data
-        # normaliza ndarray para RGB uint8
         if arr.ndim == 2:
             arr = np.stack([arr, arr, arr], axis=-1)
         if arr.ndim != 3 or arr.shape[2] not in (3, 4):
@@ -126,24 +138,9 @@ def _frame_to_np(fr):
         return None
     return np.ascontiguousarray(arr)
 
-def _ensure_rgb_uint8(arr: np.ndarray) -> np.ndarray:
-    """Garante HxWx3, dtype=uint8, memória contígua."""
-    if arr is None or not isinstance(arr, np.ndarray):
-        return None
-    if arr.ndim == 2:
-        arr = np.stack([arr, arr, arr], axis=-1)
-    if arr.ndim != 3 or arr.shape[2] not in (3, 4):
-        return None
-    if arr.shape[2] == 4:
-        arr = arr[:, :, :3]
-    if arr.dtype != np.uint8:
-        arr = arr.astype(np.uint8, copy=False)
-    return np.ascontiguousarray(arr)
-
 def _safe_show_image(fr, width_px: int, fallback_caption: str):
     """Mostra o frame com fallback para bytes PNG caso st.image rejeite o array."""
     arr = _frame_to_np(fr)
-    arr = _ensure_rgb_uint8(arr)
     if arr is None or arr.size == 0:
         st.warning(f"Não foi possível mostrar o {fallback_caption}")
         return
@@ -160,7 +157,10 @@ def _safe_show_image(fr, width_px: int, fallback_caption: str):
             st.warning(f"Falha ao renderizar {fallback_caption}.")
 
 def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, target_width: int = TARGET_WIDTH):
-    """Extrai N frames distribuídos ao longo do vídeo (mantendo PNG) com pequenos reforços de robustez."""
+    """
+    Extrai N frames distribuídos ao longo do vídeo (mantendo PNG) e salva também o array RGB ('arr')
+    para exibição robusta e rápida.
+    """
     frames = []
     duration = 0.0
 
@@ -169,10 +169,7 @@ def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, tar
         return [], 0.0
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 0
-    total_frames = int(cv2.VideoCapture(video_path).get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    # usa o handle atual para evitar novo open:
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-
     if fps <= 0 or total_frames <= 0:
         cap.release()
         return [], 0.0
@@ -201,14 +198,18 @@ def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, tar
             new_h = int(h * (target_width / w))
             frame_rgb = cv2.resize(frame_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        # PNG bytes
-        pil_img = Image.fromarray(frame_rgb)
+        # Guarda também o array RGB contíguo (para render estável)
+        arr = np.ascontiguousarray(frame_rgb, dtype=np.uint8)
+
+        # PNG bytes (mantém seu formato original)
+        pil_img = Image.fromarray(arr)
         buff = io.BytesIO()
         pil_img.save(buff, format="PNG", optimize=True)
         png_bytes = buff.getvalue()
 
         timestamp = round(idx / fps, 2)
         frames.append({
+            "arr": arr,  # << novo: base preferida para exibição
             "png_bytes": png_bytes,
             "timestamp": timestamp,
             "frame_number": int(i + 1),
@@ -299,11 +300,11 @@ with tabs[0]:
 
 # ---------- TAB 2: Pré-visualização ----------
 with tabs[1]:
-    st.markdown("### 2) Pré-visualização do vídeo (50% da largura)")
+    st.markdown("### 2) Pré-visualização do vídeo (~metade da altura)")
     state = st.session_state[K_STATE]
     if state["temp_video_path"] and os.path.exists(state["temp_video_path"]):
-        cols = st.columns(VIDEO_COLS)  # duas colunas → 50%
-        with cols[0]:  # usa só a primeira coluna
+        cols = st.columns(VIDEO_COLS)  # ~25% da largura total
+        with cols[0]:
             st.video(state["temp_video_path"], format="video/mp4", start_time=0)
             st.caption(f"Arquivo: {state['filename']} — Duração: {round(state['duration'], 2)}s")
     else:
