@@ -1,10 +1,8 @@
-import streamlit as st, datetime
-st.sidebar.success("BUILD: " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
-st.sidebar.caption("Streamlit: " + st.__version__)
+import streamlit as st
+st.set_page_config(page_title="Analisador de Vídeo Técnico", layout="wide")
 
 import os
 import io
-import base64
 import tempfile
 from datetime import datetime
 
@@ -12,10 +10,15 @@ import cv2
 import numpy as np
 from PIL import Image
 
-import streamlit as st
+# =========================
+# Banner de build (opcional, para confirmar deploy)
+# =========================
+st.sidebar.success("BUILD: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+st.sidebar.caption("Streamlit: " + st.__version__)
 
-st.set_page_config(page_title="Analisador de Vídeo Técnico", layout="wide")
-
+# =========================
+# Chaves e estado (estáveis)
+# =========================
 K_UPLOAD = "upload_video_v1"
 K_TECNICO = "input_tecnico_v1"
 K_SERIE = "input_serie_v1"
@@ -28,7 +31,7 @@ if K_STATE not in st.session_state:
         "temp_video_path": None,
         "duration": 0.0,
         "num_frames": 0,
-        "frames": [],
+        "frames": [],  # [{png_bytes, timestamp, frame_number}]
         "timestamp_run": None,
         "tecnico": "",
         "serie": "",
@@ -36,6 +39,9 @@ if K_STATE not in st.session_state:
 if K_PAGE not in st.session_state:
     st.session_state[K_PAGE] = 1
 
+# =========================
+# Funções utilitárias
+# =========================
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"}
 
 def allowed_file(name: str) -> bool:
@@ -45,6 +51,7 @@ def allowed_file(name: str) -> bool:
     return ext in ALLOWED_EXTENSIONS
 
 def extract_frames_from_video(video_path: str, num_frames: int = 10, target_width: int = 640):
+    """Extrai N frames distribuídos ao longo do vídeo com checagens robustas."""
     frames = []
     duration = 0.0
 
@@ -59,8 +66,7 @@ def extract_frames_from_video(video_path: str, num_frames: int = 10, target_widt
         return [], 0.0
 
     duration = total_frames / fps
-    import numpy as _np
-    indexes = _np.linspace(0, total_frames - 1, num=num_frames, dtype=int)
+    indexes = np.linspace(0, total_frames - 1, num=num_frames, dtype=int)
 
     for i, idx in enumerate(indexes):
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
@@ -68,14 +74,17 @@ def extract_frames_from_video(video_path: str, num_frames: int = 10, target_widt
         if not ok or frame is None:
             continue
 
+        # BGR -> RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
+        # Resize proporcional (largura alvo)
         h, w, _ = frame_rgb.shape
         if w > target_width:
             new_w = target_width
             new_h = int(h * (target_width / w))
             frame_rgb = cv2.resize(frame_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
+        # Para PNG bytes
         pil_img = Image.fromarray(frame_rgb)
         buff = io.BytesIO()
         pil_img.save(buff, format="PNG", optimize=True)
@@ -92,6 +101,7 @@ def extract_frames_from_video(video_path: str, num_frames: int = 10, target_widt
     return frames, duration
 
 def build_report_text(state: dict) -> str:
+    """Gera o texto do relatório a partir do estado atual."""
     lines = []
     lines.append("RELATÓRIO DE ANÁLISE DE VÍDEO TÉCNICO")
     lines.append("=" * 35)
@@ -106,8 +116,12 @@ def build_report_text(state: dict) -> str:
         lines.append(f"- Frame {f['frame_number']:02d} | t={f['timestamp']}s")
     return "\n".join(lines)
 
-tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
+# =========================
+# Layout ESTÁVEL (tabs fixas)
+# =========================
+tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])  # nomes fixos sempre
 
+# ---------- TAB 1: Upload ----------
 with tabs[0]:
     st.markdown("### 1) Envie o vídeo e os dados")
     col1, col2 = st.columns(2)
@@ -129,8 +143,7 @@ with tabs[0]:
         elif not allowed_file(video_file.name):
             st.error("Formato não suportado.")
         else:
-            import tempfile as _tempfile
-            tmpdir = _tempfile.mkdtemp(prefix="vid_")
+            tmpdir = tempfile.mkdtemp(prefix="vid_")
             safe_name = os.path.basename(video_file.name).replace(" ", "_")
             video_path = os.path.join(tmpdir, f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}")
             with open(video_path, "wb") as f:
@@ -150,29 +163,33 @@ with tabs[0]:
                     "tecnico": tecnico,
                     "serie": serie,
                 }
+                st.session_state[K_PAGE] = 1
                 st.success("Análise concluída! Vá para as abas de Pré-visualização e Frames.")
 
+# ---------- TAB 2: Pré-visualização ----------
 with tabs[1]:
     st.markdown("### 2) Pré-visualização do vídeo")
     state = st.session_state[K_STATE]
     if state["temp_video_path"] and os.path.exists(state["temp_video_path"]):
-        st.video(state["temp_video_path"])
-        st.caption(f"Arquivo: {state['filename']} — Duração: {round(state['duration'],2)}s")
+        st.video(state["temp_video_path"])  # componente nativo (estável)
+        st.caption(f"Arquivo: {state['filename']} — Duração: {round(state['duration'], 2)}s")
     else:
         st.info("Envie um vídeo na aba **Upload**.")
 
+# ---------- TAB 3: Frames ----------
 with tabs[2]:
     st.markdown("### 3) Frames extraídos")
     state = st.session_state[K_STATE]
     frames = state["frames"]
     if frames:
+        # Paginação estável (quatro colunas fixas)
         per_page = 8
         total = len(frames)
         pages = max(1, (total + per_page - 1) // per_page)
 
-        ctop = st.container()
-        with ctop:
-            c1, c2, c3 = st.columns([1,1,2])
+        top = st.container()
+        with top:
+            c1, c2, c3 = st.columns([1, 1, 2])
             with c1:
                 st.write(f"Total de frames: **{total}**")
             with c2:
@@ -184,17 +201,19 @@ with tabs[2]:
                     step=1, key="page_selector_v1"
                 )
 
-        start = (st.session_state[K_PAGE]-1) * per_page
+        start = (st.session_state[K_PAGE] - 1) * per_page
         end = start + per_page
         subset = frames[start:end]
 
-        cols = st.columns(4)
+        cols = st.columns(4)  # FIXO
         for i, fr in enumerate(subset):
             with cols[i % 4]:
-                st.image(fr["png_bytes"], caption=f"Frame {fr['frame_number']} — t={fr['timestamp']}s", use_container_width=True)
+                st.image(fr["png_bytes"], caption=f"Frame {fr['frame_number']} — t={fr['timestamp']}s",
+                         use_container_width=True)
     else:
         st.info("Nenhum frame disponível. Faça o upload na aba **Upload**.")
 
+# ---------- TAB 4: Relatório ----------
 with tabs[3]:
     st.markdown("### 4) Relatório")
     state = st.session_state[K_STATE]
