@@ -229,4 +229,3 @@ with tabs[3]:
         )
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
-
