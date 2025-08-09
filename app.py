@@ -257,7 +257,7 @@ def build_zip_package(state: dict) -> tuple[bytes, str]:
     return zip_bytes, zip_filename
 
 def _reset_analysis():
-    """Remove a pasta temporária, limpa TODO o session_state e recarrega a página."""
+    """Limpa toda a base: apaga temp_dir, limpa session_state e recarrega."""
     try:
         state = st.session_state.get(K_STATE, {})
         temp_dir = state.get("temp_dir")
@@ -265,17 +265,16 @@ def _reset_analysis():
             shutil.rmtree(temp_dir, ignore_errors=True)
     except Exception:
         pass
-
-    st.session_state.clear()  # limpa widgets e estados
-
-    # Após limpar, o rerun volta à primeira aba (Upload)
+    # limpa tudo (inclui widgets)
+    st.session_state.clear()
+    # recarrega
     try:
         st.rerun()
     except Exception:
         st.experimental_rerun()
 
 # ========= Layout (tabs fixas) =========
-tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório", "Nova análise"])
+tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
 
 # --- TAB 1: Upload ---
 with tabs[0]:
@@ -403,12 +402,10 @@ with tabs[3]:
             mime="application/zip",
             key="dl_zip_v1"
         )
+
+        # Botão NOVA ANÁLISE (sem emoji) — no final da aba Relatório
+        st.divider()
+        if st.button("Nova análise", type="primary", key="btn_reset_from_report"):
+            _reset_analysis()
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
-
-# --- TAB 5: Nova análise ---
-with tabs[4]:
-    st.markdown("### Nova análise")
-    st.info("Clique no botão abaixo para limpar tudo e retornar à aba **Upload**.")
-    if st.button("Nova análise", type="primary", key="btn_reset_from_tab"):
-        _reset_analysis()
