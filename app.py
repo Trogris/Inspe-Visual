@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import zipfile
 import re
 from pathlib import Path
+import shutil  # para remover a pasta temporária
 
 import cv2
 import numpy as np
@@ -30,6 +31,12 @@ THUMB_WIDTH  = 160    # miniatura padrão
 VIDEO_COLS   = [1, 3] # ~25% da largura (altura do player fica menor)
 TZ_BR = ZoneInfo("America/Sao_Paulo")
 
+# ========= Navegação pós-reset (garante voltar à aba Upload) =========
+_params = st.experimental_get_query_params()
+if _params.get("tab") == ["upload"]:
+    # limpa o parâmetro e segue; a primeira aba (Upload) será selecionada
+    st.experimental_set_query_params()
+
 # ========= Estado =========
 K_UPLOAD = "upload_video_v1"
 K_TECNICO = "input_tecnico_v1"
@@ -39,6 +46,7 @@ K_STATE = "state_video_meta_v1"
 
 if K_STATE not in st.session_state:
     st.session_state[K_STATE] = {
+        "temp_dir": None,          # << novo: guardamos a pasta temporária para limpeza completa
         "filename": None,
         "temp_video_path": None,
         "duration": 0.0,
@@ -255,19 +263,25 @@ def build_zip_package(state: dict) -> tuple[bytes, str]:
     return zip_bytes, zip_filename
 
 def _reset_analysis():
-    """Limpa estado para iniciar nova análise."""
-    st.session_state[K_STATE] = {
-        "filename": None,
-        "temp_video_path": None,
-        "duration": 0.0,
-        "num_frames": 0,
-        "frames": [],
-        "timestamp_run": None,
-        "tecnico": "",
-        "serie": "",
-        "contrato": "",
-    }
-    st.experimental_rerun()
+    """Limpa toda a base, força voltar para a aba Upload e recarrega a página."""
+    try:
+        temp_dir = st.session_state.get(K_STATE, {}).get("temp_dir")
+        if temp_dir and os.path.isdir(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    # 1) Limpa TODOS os estados, incluindo widgets (uploader, inputs, slider)
+    st.session_state.clear()
+
+    # 2) Seta um parâmetro de navegação para garantir volta à Upload
+    st.experimental_set_query_params(tab="upload")
+
+    # 3) Recarrega
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
 
 # ========= Layout (tabs fixas) =========
 tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
@@ -297,6 +311,7 @@ with tabs[0]:
             st.error("Formato não suportado.")
         else:
             tmpdir = tempfile.mkdtemp(prefix="vid_")
+            st.session_state[K_STATE]["temp_dir"] = tmpdir  # << guarda a pasta temp para limpar no reset
             safe_name = os.path.basename(video_file.name).replace(" ", "_")
             video_path = os.path.join(tmpdir, f"{datetime.now(TZ_BR).strftime('%Y%m%d_%H%M%S')}_{safe_name}")
             with open(video_path, "wb") as f:
@@ -321,6 +336,7 @@ with tabs[0]:
                 st.error("Falha ao extrair frames. Verifique o codec do vídeo.")
             else:
                 st.session_state[K_STATE] = {
+                    "temp_dir": tmpdir,
                     "filename": safe_name,
                     "temp_video_path": video_path,
                     "duration": float(duration),
@@ -402,4 +418,3 @@ with tabs[3]:
             _reset_analysis()
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
-
