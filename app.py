@@ -1,6 +1,9 @@
 import streamlit as st
 st.set_page_config(page_title="Analisador de Vídeo Técnico", layout="wide")
 
+# =========================
+# Imports
+# =========================
 import os
 import io
 import base64
@@ -11,33 +14,33 @@ import cv2
 import numpy as np
 from PIL import Image
 
-# -------------------------
-# Performance OpenCV (leve)
-# -------------------------
+# =========================
+# Pequenos ajustes de performance
+# =========================
 try:
-    cv2.setNumThreads(2)  # 1 ou 2 ajuda em CPU compartilhada
+    cv2.setNumThreads(2)  # 1 ou 2 ajuda em CPU compartilhada (Streamlit Cloud)
 except Exception:
     pass
 
-# -------------------------
-# Parâmetros fáceis de ajustar
-# -------------------------
+# =========================
+# Parâmetros fáceis de ajustar (sem mudar a lógica)
+# =========================
 NUM_FRAMES   = 10     # manter 10 frames
-TARGET_WIDTH = 640    # para redimensionar os frames (pode reduzir p/ 480 se quiser)
+TARGET_WIDTH = 640    # reduzir p/ 480 se quiser mais velocidade
 GRID_COLS    = 5      # nº de colunas na grade de frames
-PER_PAGE     = 12     # quantos frames por página (era 8)
-THUMB_WIDTH  = 220    # largura padrão (px) das miniaturas
-VIDEO_COLS   = [1, 2, 1]  # colunas para centralizar o player (meio menor que tela cheia)
+PER_PAGE     = 12     # frames por página (era 8)
+THUMB_WIDTH  = 220    # largura das miniaturas (px)
+VIDEO_COLS   = [1, 2, 1]  # centraliza o player (coluna do meio menor que tela inteira)
 
-# -------------------------
-# Banner de build (prova de deploy)
-# -------------------------
+# =========================
+# Banner de build (opcional, confirmar deploy)
+# =========================
 st.sidebar.success("BUILD: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 st.sidebar.caption("Streamlit: " + st.__version__)
 
-# -------------------------
+# =========================
 # Chaves e estado (estáveis)
-# -------------------------
+# =========================
 K_UPLOAD = "upload_video_v1"
 K_TECNICO = "input_tecnico_v1"
 K_SERIE = "input_serie_v1"
@@ -58,9 +61,9 @@ if K_STATE not in st.session_state:
 if K_PAGE not in st.session_state:
     st.session_state[K_PAGE] = 1
 
-# -------------------------
+# =========================
 # Utilidades
-# -------------------------
+# =========================
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"}
 
 def allowed_file(name: str) -> bool:
@@ -70,11 +73,14 @@ def allowed_file(name: str) -> bool:
     return ext in ALLOWED_EXTENSIONS
 
 def _frame_to_pil(fr):
-    """Normaliza png_bytes/jpg_bytes/base64/ndarray -> PIL.Image para evitar TypeError no st.image."""
+    """
+    Normaliza png_bytes/jpg_bytes/base64/ndarray -> PIL.Image
+    Evita TypeError no st.image por tipos/modes inesperados.
+    """
     data = fr.get("png_bytes") or fr.get("jpg_bytes") or fr.get("image")
     if data is None:
         return None
-    # base64
+    # base64 -> bytes
     if isinstance(data, str):
         try:
             data = base64.b64decode(data)
@@ -86,19 +92,34 @@ def _frame_to_pil(fr):
     # bytes -> PIL
     if isinstance(data, (bytes,)):
         try:
-            return Image.open(io.BytesIO(data))
+            img = Image.open(io.BytesIO(data))
+            img.load()
         except Exception:
             return None
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+        if img.mode == "RGBA":
+            img = img.convert("RGB")
+        return img
     # ndarray (RGB) -> PIL
     if isinstance(data, np.ndarray):
         try:
-            return Image.fromarray(data)
+            if data.ndim == 3 and data.shape[2] == 3:
+                return Image.fromarray(data)
+            if data.ndim == 2:
+                return Image.fromarray(np.stack([data, data, data], axis=-1))
         except Exception:
             return None
+    # já é PIL?
+    if isinstance(data, Image.Image):
+        img = data
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        return img
     return None
 
 def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, target_width: int = TARGET_WIDTH):
-    """Extrai N frames distribuídos ao longo do vídeo com checagens robustas (mantendo PNG)."""
+    """Extrai N frames distribuídos ao longo do vídeo (mantendo PNG) com pequenos reforços de robustez."""
     frames = []
     duration = 0.0
 
@@ -107,7 +128,7 @@ def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, tar
         return [], 0.0
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.get(cv2.CAP_PROP_FRAME_COUNT) else 0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     if fps <= 0 or total_frames <= 0:
         cap.release()
         return [], 0.0
@@ -116,7 +137,7 @@ def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, tar
     indexes = np.linspace(0, total_frames - 1, num=num_frames, dtype=int)
 
     for i, idx in enumerate(indexes):
-        # Tenta buscar por frame; se falhar, tenta por tempo (MSEC)
+        # Tenta por frame; se falhar, fallback por tempo (MSEC)
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
         ok, frame = cap.read()
         if not ok or frame is None:
@@ -129,14 +150,14 @@ def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, tar
         # BGR -> RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Resize proporcional (largura alvo)
+        # Resize proporcional
         h, w, _ = frame_rgb.shape
         if w > target_width:
             new_w = target_width
             new_h = int(h * (target_width / w))
             frame_rgb = cv2.resize(frame_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        # Para PNG bytes
+        # PNG bytes
         pil_img = Image.fromarray(frame_rgb)
         buff = io.BytesIO()
         pil_img.save(buff, format="PNG", optimize=True)
@@ -168,10 +189,10 @@ def build_report_text(state: dict) -> str:
         lines.append(f"- Frame {f['frame_number']:02d} | t={f['timestamp']}s")
     return "\n".join(lines)
 
-# -------------------------
+# =========================
 # Layout ESTÁVEL (tabs fixas)
-# -------------------------
-tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])  # nomes fixos sempre
+# =========================
+tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
 
 # ---------- TAB 1: Upload ----------
 with tabs[0]:
@@ -201,7 +222,7 @@ with tabs[0]:
             with open(video_path, "wb") as f:
                 f.write(video_file.read())
 
-            # (Opcional) aviso de duração recomendada, sem bloquear
+            # Aviso de duração recomendada (não bloqueante)
             cap_tmp = cv2.VideoCapture(video_path)
             fps_tmp = cap_tmp.get(cv2.CAP_PROP_FPS) or 0
             total_tmp = int(cap_tmp.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
@@ -212,7 +233,9 @@ with tabs[0]:
                     st.info(f"Atenção: vídeo com {dur_tmp:.2f}s (recomendado entre 20 e 40s).")
 
             with st.spinner("Processando vídeo e extraindo frames..."):
-                frames, duration = extract_frames_from_video(video_path, num_frames=NUM_FRAMES, target_width=TARGET_WIDTH)
+                frames, duration = extract_frames_from_video(
+                    video_path, num_frames=NUM_FRAMES, target_width=TARGET_WIDTH
+                )
 
             if not frames:
                 st.error("Falha ao extrair frames. Verifique o codec do vídeo.")
@@ -235,9 +258,9 @@ with tabs[1]:
     st.markdown("### 2) Pré-visualização do vídeo")
     state = st.session_state[K_STATE]
     if state["temp_video_path"] and os.path.exists(state["temp_video_path"]):
-        cols = st.columns(VIDEO_COLS)  # centraliza e reduz o player
+        cols = st.columns(VIDEO_COLS)  # centraliza e diminui o player
         with cols[len(cols)//2]:
-            st.video(state["temp_video_path"])  # componente nativo (estável)
+            st.video(state["temp_video_path"])
             st.caption(f"Arquivo: {state['filename']} — Duração: {round(state['duration'], 2)}s")
     else:
         st.info("Envie um vídeo na aba **Upload**.")
@@ -259,10 +282,12 @@ with tabs[2]:
             with c3:
                 current_page = st.session_state.get(K_PAGE, 1)
                 st.session_state[K_PAGE] = st.number_input(
-                    "Página", min_value=1,
+                    "Página",
+                    min_value=1,
                     max_value=max(1, (len(frames) + PER_PAGE - 1) // PER_PAGE),
-                    value=current_page,
-                    step=1, key="page_selector_v1"
+                    value=min(current_page, max(1, (len(frames) + PER_PAGE - 1) // PER_PAGE)),
+                    step=1,
+                    key="page_selector_v1"
                 )
 
         thumb_w = st.slider("Tamanho das miniaturas (px)", 140, 320, THUMB_WIDTH, 10, key="thumb_w_v1")
@@ -274,15 +299,14 @@ with tabs[2]:
         cols = st.columns(GRID_COLS)  # grade fixa
         for i, fr in enumerate(subset):
             with cols[i % GRID_COLS]:
-                # Normaliza imagem para evitar TypeError
-                img = _frame_to_pil(fr)
+                img = _frame_to_pil(fr)  # normaliza imagem para evitar TypeError
                 if img is None:
                     st.warning(f"Não foi possível mostrar o Frame {fr.get('frame_number', i+1)}")
                     continue
                 st.image(
                     img,
                     caption=f"Frame {fr.get('frame_number', i+1)} — t={fr.get('timestamp', '?')}s",
-                    width=thumb_w,
+                    width=int(thumb_w),
                     use_container_width=False
                 )
     else:
