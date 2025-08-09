@@ -386,34 +386,46 @@ with tabs[2]:
         st.info("Nenhum frame disponível. Faça o upload na aba **Upload**.")
 
 # --- TAB 4: Relatório ---
-with tabs[3]:
+elif selected_tab == "Relatório":
     st.markdown("### 4) Relatório")
     state = st.session_state[K_STATE]
     if state["frames"]:
         report = build_report_text(state)
-        st.text_area("Prévia do relatório", report, height=260, key="report_preview_v1")
+        st.text_area("Prévia do relatório", report, height=260)
 
-        # .txt isolado (opcional)
         st.download_button(
             "📥 Baixar relatório (.txt)",
             data=report.encode("utf-8"),
             file_name="relatorio_analise_video_tecnico.txt",
-            mime="text/plain",
-            key="dl_report_v1"
+            mime="text/plain"
         )
 
-        # Pacote completo (.zip): relatório + frames + vídeo (pasta com CONTRATO + Nº de SÉRIE)
         zip_bytes, zip_name = build_zip_package(state)
         st.download_button(
             "📦 Baixar pacote completo (.zip)",
             data=zip_bytes,
             file_name=zip_name,
-            mime="application/zip",
-            key="dl_zip_v1"
+            mime="application/zip"
         )
 
-        # Botão NOVA ANÁLISE: limpa tudo e volta para Upload
-        if st.button("Nova análise", type="primary", key="btn_reset_from_report"):
-            _reset_analysis()
+        st.divider()
+        # Botão NOVA ANÁLISE — limpar e voltar para Upload
+        if st.button("Nova análise", type="primary"):
+            # Remove arquivos temporários
+            try:
+                temp_dir = st.session_state.get(K_STATE, {}).get("temp_dir")
+                if temp_dir and os.path.isdir(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+            # Limpa tudo
+            st.session_state.clear()
+
+            # Define a aba inicial (Upload) e recarrega
+            st.session_state["selected_tab"] = "Upload"
+            st.experimental_rerun()
+
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
+
