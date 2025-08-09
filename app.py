@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import zipfile
 import re
 from pathlib import Path
-import shutil  # para remover a pasta temporária
+import shutil  # << para remover a pasta temporária
 
 import cv2
 import numpy as np
@@ -31,12 +31,6 @@ THUMB_WIDTH  = 160    # miniatura padrão
 VIDEO_COLS   = [1, 3] # ~25% da largura (altura do player fica menor)
 TZ_BR = ZoneInfo("America/Sao_Paulo")
 
-# ========= Navegação pós-reset (garante voltar à aba Upload) =========
-_params = st.experimental_get_query_params()
-if _params.get("tab") == ["upload"]:
-    # limpa o parâmetro e segue; a primeira aba (Upload) será selecionada
-    st.experimental_set_query_params()
-
 # ========= Estado =========
 K_UPLOAD = "upload_video_v1"
 K_TECNICO = "input_tecnico_v1"
@@ -46,7 +40,7 @@ K_STATE = "state_video_meta_v1"
 
 if K_STATE not in st.session_state:
     st.session_state[K_STATE] = {
-        "temp_dir": None,          # << novo: guardamos a pasta temporária para limpeza completa
+        "temp_dir": None,          # << novo: guardamos a pasta temp para limpeza completa
         "filename": None,
         "temp_video_path": None,
         "duration": 0.0,
@@ -262,27 +256,6 @@ def build_zip_package(state: dict) -> tuple[bytes, str]:
     zip_filename = f"pacote_{folder_slug}.zip"
     return zip_bytes, zip_filename
 
-def _reset_analysis():
-    """Limpa toda a base, força voltar para a aba Upload e recarrega a página."""
-    try:
-        temp_dir = st.session_state.get(K_STATE, {}).get("temp_dir")
-        if temp_dir and os.path.isdir(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
-    except Exception:
-        pass
-
-    # 1) Limpa TODOS os estados, incluindo widgets (uploader, inputs, slider)
-    st.session_state.clear()
-
-    # 2) Seta um parâmetro de navegação para garantir volta à Upload
-    st.experimental_set_query_params(tab="upload")
-
-    # 3) Recarrega
-    try:
-        st.rerun()
-    except Exception:
-        st.experimental_rerun()
-
 # ========= Layout (tabs fixas) =========
 tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
 
@@ -311,7 +284,7 @@ with tabs[0]:
             st.error("Formato não suportado.")
         else:
             tmpdir = tempfile.mkdtemp(prefix="vid_")
-            st.session_state[K_STATE]["temp_dir"] = tmpdir  # << guarda a pasta temp para limpar no reset
+            st.session_state[K_STATE]["temp_dir"] = tmpdir  # << guarda a pasta temp p/ limpar no reset
             safe_name = os.path.basename(video_file.name).replace(" ", "_")
             video_path = os.path.join(tmpdir, f"{datetime.now(TZ_BR).strftime('%Y%m%d_%H%M%S')}_{safe_name}")
             with open(video_path, "wb") as f:
@@ -386,32 +359,36 @@ with tabs[2]:
         st.info("Nenhum frame disponível. Faça o upload na aba **Upload**.")
 
 # --- TAB 4: Relatório ---
-elif selected_tab == "Relatório":
+with tabs[3]:
     st.markdown("### 4) Relatório")
     state = st.session_state[K_STATE]
     if state["frames"]:
         report = build_report_text(state)
-        st.text_area("Prévia do relatório", report, height=260)
+        st.text_area("Prévia do relatório", report, height=260, key="report_preview_v1")
 
+        # .txt isolado (opcional)
         st.download_button(
             "📥 Baixar relatório (.txt)",
             data=report.encode("utf-8"),
             file_name="relatorio_analise_video_tecnico.txt",
-            mime="text/plain"
+            mime="text/plain",
+            key="dl_report_v1"
         )
 
+        # Pacote completo (.zip): relatório + frames + vídeo (pasta com CONTRATO + Nº de SÉRIE)
         zip_bytes, zip_name = build_zip_package(state)
         st.download_button(
             "📦 Baixar pacote completo (.zip)",
             data=zip_bytes,
             file_name=zip_name,
-            mime="application/zip"
+            mime="application/zip",
+            key="dl_zip_v1"
         )
 
+        # ---- Nova análise ----
         st.divider()
-        # Botão NOVA ANÁLISE — limpar e voltar para Upload
-        if st.button("Nova análise", type="primary"):
-            # Remove arquivos temporários
+        if st.button("Nova análise", type="primary", use_container_width=False):
+            # 1) apaga pasta temporária se existir
             try:
                 temp_dir = st.session_state.get(K_STATE, {}).get("temp_dir")
                 if temp_dir and os.path.isdir(temp_dir):
@@ -419,13 +396,13 @@ elif selected_tab == "Relatório":
             except Exception:
                 pass
 
-            # Limpa tudo
+            # 2) limpa TODOS os estados (inclui uploader/inputs/slider)
             st.session_state.clear()
 
-            # Define a aba inicial (Upload) e recarrega
-            st.session_state["selected_tab"] = "Upload"
-            st.experimental_rerun()
-
+            # 3) recarrega — por padrão abrirá na primeira aba (Upload)
+            try:
+                st.rerun()
+            except Exception:
+                st.experimental_rerun()
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
-
