@@ -15,25 +15,25 @@ import numpy as np
 from PIL import Image
 
 # =========================
-# Pequenos ajustes de performance
+# Pequenos ajustes de performance/estabilidade
 # =========================
 try:
-    cv2.setNumThreads(2)  # 1 ou 2 ajuda em CPU compartilhada (Streamlit Cloud)
+    cv2.setNumThreads(2)  # 1 ou 2 ajuda em CPU compartilhada
 except Exception:
     pass
 
 # =========================
-# Parâmetros fáceis de ajustar (sem mudar a lógica)
+# Parâmetros fáceis de ajustar
 # =========================
 NUM_FRAMES   = 10     # manter 10 frames
-TARGET_WIDTH = 640    # reduzir p/ 480 se quiser mais velocidade
-GRID_COLS    = 5      # nº de colunas na grade de frames
-PER_PAGE     = 12     # frames por página (era 8)
-THUMB_WIDTH  = 220    # largura das miniaturas (px)
-VIDEO_COLS   = [1, 2, 1]  # centraliza o player (coluna do meio menor que tela inteira)
+TARGET_WIDTH = 640    # redimensionamento dos frames durante a extração
+GRID_COLS    = 5      # nº de colunas na grade
+PER_PAGE     = 12     # frames por página
+THUMB_WIDTH  = 160    # ***metade do tamanho anterior*** (miniatura padrão)
+VIDEO_COLS   = [1, 1] # ***metade da largura*** para o player (usa só a 1ª coluna)
 
 # =========================
-# Banner de build (opcional, confirmar deploy)
+# Banner de build (opcional)
 # =========================
 st.sidebar.success("BUILD: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 st.sidebar.caption("Streamlit: " + st.__version__)
@@ -72,51 +72,59 @@ def allowed_file(name: str) -> bool:
     ext = os.path.splitext(name)[1].lower()
     return ext in ALLOWED_EXTENSIONS
 
-def _frame_to_pil(fr):
+def _frame_to_np(fr):
     """
-    Normaliza png_bytes/jpg_bytes/base64/ndarray -> PIL.Image
+    Converte png_bytes/jpg_bytes/base64/PIL/ndarray -> NumPy RGB uint8 (H,W,3).
     Evita TypeError no st.image por tipos/modes inesperados.
     """
-    data = fr.get("png_bytes") or fr.get("jpg_bytes") or fr.get("image")
+    data = fr.get("jpg_bytes") or fr.get("png_bytes") or fr.get("image")
     if data is None:
         return None
+
     # base64 -> bytes
     if isinstance(data, str):
         try:
             data = base64.b64decode(data)
         except Exception:
             return None
-    # bytearray/memoryview -> bytes
-    if isinstance(data, (bytearray, memoryview)):
+
+    # memoryview/bytearray -> bytes
+    if isinstance(data, (memoryview, bytearray)):
         data = bytes(data)
+
     # bytes -> PIL
     if isinstance(data, (bytes,)):
         try:
             img = Image.open(io.BytesIO(data))
-            img.load()
+            img.load()  # materializa
         except Exception:
             return None
-        if img.mode not in ("RGB", "RGBA"):
-            img = img.convert("RGB")
-        if img.mode == "RGBA":
-            img = img.convert("RGB")
-        return img
-    # ndarray (RGB) -> PIL
-    if isinstance(data, np.ndarray):
-        try:
-            if data.ndim == 3 and data.shape[2] == 3:
-                return Image.fromarray(data)
-            if data.ndim == 2:
-                return Image.fromarray(np.stack([data, data, data], axis=-1))
-        except Exception:
-            return None
-    # já é PIL?
-    if isinstance(data, Image.Image):
+    elif isinstance(data, Image.Image):
         img = data
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        return img
-    return None
+    elif isinstance(data, np.ndarray):
+        arr = data
+        # normaliza ndarray para RGB uint8
+        if arr.ndim == 2:
+            arr = np.stack([arr, arr, arr], axis=-1)
+        if arr.ndim != 3 or arr.shape[2] not in (3, 4):
+            return None
+        if arr.shape[2] == 4:
+            arr = arr[:, :, :3]
+        if arr.dtype != np.uint8:
+            arr = arr.astype(np.uint8, copy=False)
+        return arr
+    else:
+        return None
+
+    # PIL -> RGB ndarray uint8
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    arr = np.asarray(img)
+    if arr.dtype != np.uint8:
+        arr = arr.astype(np.uint8, copy=False)
+    if arr.ndim != 3 or arr.shape[2] != 3:
+        return None
+    return arr
 
 def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, target_width: int = TARGET_WIDTH):
     """Extrai N frames distribuídos ao longo do vídeo (mantendo PNG) com pequenos reforços de robustez."""
@@ -255,23 +263,23 @@ with tabs[0]:
 
 # ---------- TAB 2: Pré-visualização ----------
 with tabs[1]:
-    st.markdown("### 2) Pré-visualização do vídeo")
+    st.markdown("### 2) Pré-visualização do vídeo (50% da largura)")
     state = st.session_state[K_STATE]
     if state["temp_video_path"] and os.path.exists(state["temp_video_path"]):
-        cols = st.columns(VIDEO_COLS)  # centraliza e diminui o player
-        with cols[len(cols)//2]:
-            st.video(state["temp_video_path"])
+        cols = st.columns(VIDEO_COLS)  # duas colunas iguais → 50% da largura
+        with cols[0]:  # usa apenas a primeira coluna (metade da largura da página)
+            st.video(state["temp_video_path"], format="video/mp4", start_time=0)
             st.caption(f"Arquivo: {state['filename']} — Duração: {round(state['duration'], 2)}s")
     else:
         st.info("Envie um vídeo na aba **Upload**.")
 
 # ---------- TAB 3: Frames ----------
 with tabs[2]:
-    st.markdown("### 3) Frames extraídos")
+    st.markdown("### 3) Frames extraídos (miniaturas 50%)")
     state = st.session_state[K_STATE]
     frames = state["frames"]
     if frames:
-        # Controles de página e tamanho de miniatura
+        # Controles de página e tamanho (slider já inicia em 160 px)
         top = st.container()
         with top:
             c1, c2, c3 = st.columns([1, 1, 2])
@@ -290,23 +298,27 @@ with tabs[2]:
                     key="page_selector_v1"
                 )
 
-        thumb_w = st.slider("Tamanho das miniaturas (px)", 140, 320, THUMB_WIDTH, 10, key="thumb_w_v1")
+        thumb_w = st.slider(
+            "Tamanho das miniaturas (px)",
+            120, 320, THUMB_WIDTH, 10, key="thumb_w_v1"
+        )
 
         start = (st.session_state[K_PAGE] - 1) * PER_PAGE
         end = start + PER_PAGE
         subset = frames[start:end]
 
-        cols = st.columns(GRID_COLS)  # grade fixa
+        cols = st.columns(GRID_COLS)  # grade fixa (estável)
         for i, fr in enumerate(subset):
             with cols[i % GRID_COLS]:
-                img = _frame_to_pil(fr)  # normaliza imagem para evitar TypeError
-                if img is None:
+                arr = _frame_to_np(fr)  # normaliza para evitar TypeError
+                if arr is None:
                     st.warning(f"Não foi possível mostrar o Frame {fr.get('frame_number', i+1)}")
                     continue
+
                 st.image(
-                    img,
-                    caption=f"Frame {fr.get('frame_number', i+1)} — t={fr.get('timestamp', '?')}s",
-                    width=int(thumb_w),
+                    arr,
+                    caption=f"Frame {int(fr.get('frame_number', i+1))} — t={str(fr.get('timestamp','?'))}s",
+                    width=int(thumb_w),          # ***metade do tamanho padrão***
                     use_container_width=False
                 )
     else:
