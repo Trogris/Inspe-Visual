@@ -31,20 +31,16 @@ THUMB_WIDTH  = 160    # miniatura padrão
 VIDEO_COLS   = [1, 3] # ~25% da largura (altura do player fica menor)
 TZ_BR = ZoneInfo("America/Sao_Paulo")
 
-# ========= Banner (opcional) =========
-st.sidebar.success("BUILD: " + datetime.now(TZ_BR).strftime("%Y-%m-%d %H:%M:%S"))
-st.sidebar.caption("Streamlit: " + st.__version__)
-
 # ========= Estado =========
-K_UPLOAD = "upload_video_v1"
-K_TECNICO = "input_tecnico_v1"
-K_SERIE = "input_serie_v1"
-K_CONTRATO = "input_contrato_v1"
-K_STATE = "state_video_meta_v1"
+K_UPLOAD    = "upload_video_v1"
+K_TECNICO   = "input_tecnico_v1"
+K_SERIE     = "input_serie_v1"
+K_CONTRATO  = "input_contrato_v1"
+K_STATE     = "state_video_meta_v1"
 
 def _initial_state():
     return {
-        "temp_dir": None,          # << novo: guardamos a pasta temp para limpeza completa
+        "temp_dir": None,          # pasta temporária para limpeza completa
         "filename": None,
         "temp_video_path": None,
         "duration": 0.0,
@@ -277,10 +273,6 @@ tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
 
 # --- TAB 1: Upload ---
 with tabs[0]:
-    # Botão Nova análise (SEM emoji) — limpa toda a base
-    if st.button("Nova análise", type="primary", use_container_width=False):
-        _reset_analysis()
-
     st.markdown("### 1) Envie o vídeo e os dados")
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -342,6 +334,10 @@ with tabs[0]:
                     "contrato": contrato,
                 })
                 st.success("Análise concluída! Vá para as abas de Pré-visualização e Frames.")
+
+    # Botão Nova análise logo abaixo do "Enviar e Analisar"
+    if st.button("Nova análise", type="primary", use_container_width=False, key="btn_reset_v1"):
+        _reset_analysis()
 
 # --- TAB 2: Pré-visualização ---
 with tabs[1]:
