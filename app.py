@@ -7,6 +7,9 @@ import io
 import base64
 import tempfile
 from datetime import datetime
+import zipfile
+import re
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -58,6 +61,16 @@ def allowed_file(name: str) -> bool:
     if not name:
         return False
     return os.path.splitext(name)[1].lower() in ALLOWED_EXTENSIONS
+
+def _slugify(text: str, fallback: str = "sem_serie") -> str:
+    """Transforma texto em pasta segura (sem pontuação problemática/espacos múltiplos)."""
+    if not text:
+        return fallback
+    t = text.strip()
+    t = re.sub(r"[^\w\s-]", "_", t, flags=re.UNICODE)  # remove pontuação/acento
+    t = re.sub(r"\s+", "_", t)                        # espaços -> _
+    t = re.sub(r"_+", "_", t).strip("_.")             # colapsa _
+    return t or fallback
 
 def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, target_width: int = TARGET_WIDTH):
     """
@@ -192,6 +205,54 @@ def _safe_show_image(fr, width_px: int, caption: str):
     except Exception:
         st.warning(f"Falha ao renderizar {caption} (fallback HTML).")
 
+def build_zip_package(state: dict) -> tuple[bytes, str]:
+    """
+    Monta um .zip em memória com:
+      /<SERIE>/
+        relatorio_analise_video_tecnico.txt
+        <video_original>
+        frames/frame_01.png ... frame_10.png
+    Retorna (zip_bytes, zip_filename).
+    """
+    serie_slug = _slugify(state.get("serie", "")) or "sem_serie"
+    base_dir = f"{serie_slug}/"
+
+    # Relatório
+    report_txt = build_report_text(state).encode("utf-8")
+
+    # Vídeo
+    video_path = state.get("temp_video_path")
+    video_bytes = None
+    video_name = None
+    if video_path and os.path.exists(video_path):
+        video_name = Path(state.get("filename") or Path(video_path).name).name
+        with open(video_path, "rb") as vf:
+            video_bytes = vf.read()
+
+    # Frames
+    frames = state.get("frames", [])
+
+    # Zip em memória
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        # relatório
+        zf.writestr(base_dir + "relatorio_analise_video_tecnico.txt", report_txt)
+
+        # vídeo (se disponível)
+        if video_bytes is not None and video_name:
+            zf.writestr(base_dir + video_name, video_bytes)
+
+        # frames
+        for f in frames:
+            n = int(f.get("frame_number", 0))
+            png = f.get("png_bytes")
+            if isinstance(png, (bytes, bytearray, memoryview)) and len(png) > 0:
+                zf.writestr(base_dir + f"frames/frame_{n:02d}.png", bytes(png))
+
+    zip_bytes = buf.getvalue()
+    zip_filename = f"pacote_{serie_slug}.zip"
+    return zip_bytes, zip_filename
+
 # ========= Layout (tabs fixas) =========
 tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
 
@@ -319,12 +380,24 @@ with tabs[3]:
     if state["frames"]:
         report = build_report_text(state)
         st.text_area("Prévia do relatório", report, height=260, key="report_preview_v1")
+
+        # .txt isolado
         st.download_button(
             "📥 Baixar relatório (.txt)",
             data=report.encode("utf-8"),
             file_name="relatorio_analise_video_tecnico.txt",
             mime="text/plain",
             key="dl_report_v1"
+        )
+
+        # Pacote completo (.zip): relatório + frames + vídeo
+        zip_bytes, zip_name = build_zip_package(state)
+        st.download_button(
+            "📦 Baixar pacote completo (.zip)",
+            data=zip_bytes,
+            file_name=zip_name,
+            mime="application/zip",
+            key="dl_zip_v1"
         )
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
