@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import zipfile
 import re
 from pathlib import Path
+import shutil
 
 import cv2
 import numpy as np
@@ -18,32 +19,47 @@ from PIL import Image
 
 # ========= Performance / estabilidade =========
 try:
-    cv2.setNumThreads(2)  # 1 ou 2 ajuda em CPU compartilhada
+    cv2.setNumThreads(1)  # menos disputa de CPU em cloud
 except Exception:
     pass
 
 # ========= Parâmetros =========
-NUM_FRAMES   = 10     # manter 10 frames
-TARGET_WIDTH = 640    # redimensionamento na extração
-GRID_COLS    = 5      # nº de colunas na grade
-THUMB_WIDTH  = 160    # miniatura padrão
-VIDEO_COLS   = [1, 3] # ~25% da largura (altura do player fica menor)
+NUM_FRAMES   = 10           # manter 10 frames
+TARGET_WIDTH = 480          # mais leve e rápido (antes 640)
+GRID_COLS    = 5            # nº de colunas na grade
+THUMB_WIDTH  = 160          # miniatura padrão
+VIDEO_COLS   = [1, 3]       # ~25% da largura (altura do player fica menor)
 TZ_BR = ZoneInfo("America/Sao_Paulo")
 
+# ========== Reset adiado via query param (executa ANTES de desenhar a UI) ==========
+# Evita "Tried to use SessionInfo before it was initialized"
+qp = st.experimental_get_query_params()
+if qp.get("reset") == ["1"]:
+    try:
+        temp_dir = st.session_state.get("state_video_meta_v1", {}).get("temp_dir")
+        if temp_dir and os.path.isdir(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+    except Exception:
+        pass
+    st.session_state.clear()                  # limpa widgets + estados
+    st.experimental_set_query_params()        # remove o ?reset=1
+    st.experimental_rerun()                   # volta para a 1ª aba (Upload)
+
 # ========= Estado =========
-K_UPLOAD = "upload_video_v1"
-K_TECNICO = "input_tecnico_v1"
-K_SERIE = "input_serie_v1"
-K_CONTRATO = "input_contrato_v1"
-K_STATE = "state_video_meta_v1"
+K_UPLOAD    = "upload_video_v1"
+K_TECNICO   = "input_tecnico_v1"
+K_SERIE     = "input_serie_v1"
+K_CONTRATO  = "input_contrato_v1"
+K_STATE     = "state_video_meta_v1"
 
 if K_STATE not in st.session_state:
     st.session_state[K_STATE] = {
+        "temp_dir": None,          # guardamos a pasta temp para limpeza completa
         "filename": None,
         "temp_video_path": None,
         "duration": 0.0,
         "num_frames": 0,
-        "frames": [],  # [{arr, png_bytes, timestamp, frame_number, shape, dtype}]
+        "frames": [],  # [{arr, jpg_bytes, timestamp, frame_number, shape, dtype}]
         "timestamp_run": None,
         "tecnico": "",
         "serie": "",
@@ -72,7 +88,7 @@ def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, tar
     """
     Extrai N frames ao longo do vídeo.
     Exibição usa SEMPRE 'arr' (NumPy RGB uint8 contíguo).
-    'png_bytes' fica apenas para download.
+    Guardamos também jpg_bytes (leve) para download/zip.
     """
     frames = []
     duration = 0.0
@@ -114,18 +130,18 @@ def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, tar
         # Arr RGB uint8 contíguo (base para exibição)
         arr = np.ascontiguousarray(frame_rgb, dtype=np.uint8)
 
-        # Bytes PNG (para download)
+        # Bytes JPEG (muito mais leve que PNG)
         buff = io.BytesIO()
-        Image.fromarray(arr).save(buff, format="PNG", optimize=True)
-        png_bytes = buff.getvalue()
+        Image.fromarray(arr).save(buff, format="JPEG", quality=85, optimize=True, progressive=True)
+        jpg_bytes = buff.getvalue()
 
         frames.append({
             "arr": arr,
-            "png_bytes": png_bytes,
+            "jpg_bytes": jpg_bytes,
             "timestamp": round(idx / fps, 2),
             "frame_number": int(i + 1),
-            "shape": tuple(arr.shape),     # debug opcional
-            "dtype": str(arr.dtype),       # debug opcional
+            "shape": tuple(arr.shape),     # info opcional
+            "dtype": str(arr.dtype),       # info opcional
         })
 
     cap.release()
@@ -148,7 +164,7 @@ def build_report_text(state: dict) -> str:
     return "\n".join(lines)
 
 def _safe_show_image(fr, width_px: int, caption: str):
-    """Renderiza SEMPRE: arr -> PIL(RGB) -> PNG. Se st.image falhar, usa <img> base64."""
+    """Renderiza SEMPRE: arr -> PIL(RGB) -> PNG. Se falhar, usa base64."""
     w = int(max(1, width_px))
 
     # 1) arr -> PIL RGB
@@ -166,12 +182,12 @@ def _safe_show_image(fr, width_px: int, caption: str):
         except Exception:
             img = None
 
-    # 2) se não tiver arr, usa png_bytes -> PIL RGB
+    # 2) fallback: jpg_bytes -> PIL RGB
     if img is None:
-        png_bytes = fr.get("png_bytes")
-        if isinstance(png_bytes, (bytes, bytearray, memoryview)) and len(png_bytes) > 0:
+        jpg_bytes = fr.get("jpg_bytes")
+        if isinstance(jpg_bytes, (bytes, bytearray, memoryview)) and len(jpg_bytes) > 0:
             try:
-                tmp = Image.open(io.BytesIO(bytes(png_bytes)))
+                tmp = Image.open(io.BytesIO(bytes(jpg_bytes)))
                 img = tmp.convert("RGB")
             except Exception:
                 img = None
@@ -180,7 +196,7 @@ def _safe_show_image(fr, width_px: int, caption: str):
         st.warning(f"Falha ao renderizar {caption}.")
         return
 
-    # 3) tenta st.image normalmente (forçando PNG)
+    # 3) tenta st.image normalmente (forçando PNG no frontend)
     try:
         st.image(img, caption=caption, width=w, use_container_width=False, output_format="PNG")
         return
@@ -202,18 +218,31 @@ def _safe_show_image(fr, width_px: int, caption: str):
     except Exception:
         st.warning(f"Falha ao renderizar {caption} (fallback HTML).")
 
+# ========= Cache da extração (acelera reruns e trocas de aba) =========
+@st.cache_data(show_spinner=False, max_entries=8)
+def cached_extract(video_bytes: bytes, num_frames: int, target_width: int):
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tf:
+        tf.write(video_bytes)
+        tmp_path = tf.name
+    try:
+        frames, duration = extract_frames_from_video(tmp_path, num_frames, target_width)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+    return frames, duration
+
 def build_zip_package(state: dict) -> tuple[bytes, str]:
     """
     Monta um .zip em memória com:
       /<CONTRATO>_<SERIE>/
-        relatorio_analise_video_tecnico.txt (inclui Técnico, Série e Contrato)
+        relatorio_analise_video_tecnico.txt
         <video_original>
-        frames/frame_01.png ... frame_10.png
-    Retorna (zip_bytes, zip_filename).
+        frames/frame_01.jpg ... frame_10.jpg
     """
     serie_slug = _slugify(state.get("serie", ""))
     contrato_slug = _slugify(state.get("contrato", ""))
-    # pasta inclui contrato e série, como pedido
     folder_slug = f"{contrato_slug}_{serie_slug}".strip("_") or "pacote"
     base_dir = f"{folder_slug}/"
 
@@ -235,39 +264,18 @@ def build_zip_package(state: dict) -> tuple[bytes, str]:
     # Zip em memória
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        # relatório
         zf.writestr(base_dir + "relatorio_analise_video_tecnico.txt", report_txt)
-
-        # vídeo (se disponível)
         if video_bytes is not None and video_name:
             zf.writestr(base_dir + video_name, video_bytes)
-
-        # frames
         for f in frames:
             n = int(f.get("frame_number", 0))
-            png = f.get("png_bytes")
-            if isinstance(png, (bytes, bytearray, memoryview)) and len(png) > 0:
-                zf.writestr(base_dir + f"frames/frame_{n:02d}.png", bytes(png))
+            jpg = f.get("jpg_bytes")
+            if isinstance(jpg, (bytes, bytearray, memoryview)) and len(jpg) > 0:
+                zf.writestr(base_dir + f"frames/frame_{n:02d}.jpg", bytes(jpg))
 
     zip_bytes = buf.getvalue()
-    # nome do arquivo zip mantém também contrato+série
     zip_filename = f"pacote_{folder_slug}.zip"
     return zip_bytes, zip_filename
-
-def _reset_analysis():
-    """Limpa estado para iniciar nova análise."""
-    st.session_state[K_STATE] = {
-        "filename": None,
-        "temp_video_path": None,
-        "duration": 0.0,
-        "num_frames": 0,
-        "frames": [],
-        "timestamp_run": None,
-        "tecnico": "",
-        "serie": "",
-        "contrato": "",
-    }
-    st.experimental_rerun()
 
 # ========= Layout (tabs fixas) =========
 tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
@@ -297,6 +305,7 @@ with tabs[0]:
             st.error("Formato não suportado.")
         else:
             tmpdir = tempfile.mkdtemp(prefix="vid_")
+            st.session_state[K_STATE]["temp_dir"] = tmpdir  # para limpeza no reset
             safe_name = os.path.basename(video_file.name).replace(" ", "_")
             video_path = os.path.join(tmpdir, f"{datetime.now(TZ_BR).strftime('%Y%m%d_%H%M%S')}_{safe_name}")
             with open(video_path, "wb") as f:
@@ -312,15 +321,17 @@ with tabs[0]:
                 if not (20 <= dur_tmp <= 40):
                     st.info(f"Atenção: vídeo com {dur_tmp:.2f}s (recomendado entre 20 e 40s).")
 
+            # ===== Processamento rápido com cache (bytes do vídeo) =====
+            with open(video_path, "rb") as rf:
+                video_bytes = rf.read()
             with st.spinner("Processando vídeo e extraindo frames..."):
-                frames, duration = extract_frames_from_video(
-                    video_path, num_frames=NUM_FRAMES, target_width=TARGET_WIDTH
-                )
+                frames, duration = cached_extract(video_bytes, NUM_FRAMES, TARGET_WIDTH)
 
             if not frames:
                 st.error("Falha ao extrair frames. Verifique o codec do vídeo.")
             else:
                 st.session_state[K_STATE] = {
+                    "temp_dir": tmpdir,
                     "filename": safe_name,
                     "temp_video_path": video_path,
                     "duration": float(duration),
@@ -386,7 +397,7 @@ with tabs[3]:
             key="dl_report_v1"
         )
 
-        # Pacote completo (.zip): relatório + frames + vídeo (pasta com CONTRATO + Nº de SÉRIE)
+        # Pacote completo (.zip): relatório + frames (JPG) + vídeo
         zip_bytes, zip_name = build_zip_package(state)
         st.download_button(
             "📦 Baixar pacote completo (.zip)",
@@ -396,10 +407,11 @@ with tabs[3]:
             key="dl_zip_v1"
         )
 
-        # ---- Nova análise ----
+        # ---- Nova análise (reset seguro + redirecionamento) ----
         st.divider()
-        if st.button("Nova análise", type="primary", use_container_width=False):
-            _reset_analysis()
+        if st.button("Nova análise", type="primary", use_container_width=False, key="btn_reset_from_report"):
+            # Em vez de limpar já, marcamos o reset e rerun.
+            st.experimental_set_query_params(reset="1")
+            st.experimental_rerun()
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
-
