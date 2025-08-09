@@ -1,3 +1,7 @@
+import datetime as _dt
+st.sidebar.success("BUILD: " + _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+st.sidebar.caption("Streamlit: " + st.__version__)
+
 import streamlit as st
 st.set_page_config(page_title="Analisador de Vídeo Técnico", layout="wide")
 
