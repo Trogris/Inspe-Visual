@@ -4,6 +4,7 @@ st.set_page_config(page_title="Analisador de Vídeo Técnico", layout="wide")
 # ========= Imports =========
 import os
 import io
+import base64
 import tempfile
 from datetime import datetime
 
@@ -136,16 +137,60 @@ def build_report_text(state: dict) -> str:
         lines.append(f"- Frame {f['frame_number']:02d} | t={f['timestamp']}s")
     return "\n".join(lines)
 
-def _show_arr(fr, width_px: int, caption: str):
-    """Renderiza SEMPRE via array RGB uint8 contíguo."""
-    arr = fr.get("arr", None)
-    if not isinstance(arr, np.ndarray) or arr.ndim != 3 or arr.shape[2] != 3:
-        st.warning(f"Frame inválido para exibição: {caption}")
+def _safe_show_image(fr, width_px: int, caption: str):
+    """Renderiza SEMPRE: arr -> PIL(RGB) -> PNG. Se st.image falhar, usa <img> base64."""
+    w = int(max(1, width_px))
+
+    # 1) arr -> PIL RGB
+    img = None
+    arr = fr.get("arr")
+    if isinstance(arr, np.ndarray):
+        try:
+            if arr.ndim == 2:
+                arr = np.stack([arr, arr, arr], axis=-1)
+            if arr.ndim >= 3:
+                arr = arr[:, :, :3]
+            if arr.dtype != np.uint8:
+                arr = arr.astype(np.uint8, copy=False)
+            img = Image.fromarray(np.ascontiguousarray(arr), mode="RGB")
+        except Exception:
+            img = None
+
+    # 2) se não tiver arr, usa png_bytes -> PIL RGB
+    if img is None:
+        png_bytes = fr.get("png_bytes")
+        if isinstance(png_bytes, (bytes, bytearray, memoryview)) and len(png_bytes) > 0:
+            try:
+                tmp = Image.open(io.BytesIO(bytes(png_bytes)))
+                img = tmp.convert("RGB")
+            except Exception:
+                img = None
+
+    if img is None:
+        st.warning(f"Falha ao renderizar {caption}.")
         return
-    if arr.dtype != np.uint8:
-        arr = arr.astype(np.uint8, copy=False)
-    arr = np.ascontiguousarray(arr)
-    st.image(arr, caption=caption, width=int(max(1, width_px)), use_container_width=False)
+
+    # 3) tenta st.image normalmente (forçando PNG)
+    try:
+        st.image(img, caption=caption, width=w, use_container_width=False, output_format="PNG")
+        return
+    except Exception:
+        pass
+
+    # 4) Fallback final: <img> base64 (HTML)
+    try:
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        html = f"""
+        <div style="width:{w}px;text-align:center;">
+          <img src="data:image/png;base64,{b64}" width="{w}" />
+          <div style="font-size:12px;color:#666;">{caption}</div>
+        </div>
+        """
+        st.markdown(html, unsafe_allow_html=True)
+    except Exception:
+        st.warning(f"Falha ao renderizar {caption} (fallback HTML).")
 
 # ========= Layout (tabs fixas) =========
 tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
@@ -254,12 +299,9 @@ with tabs[2]:
         for i, fr in enumerate(subset):
             with cols[i % GRID_COLS]:
                 caption = f"Frame {int(fr.get('frame_number', i+1))} — t={str(fr.get('timestamp','?'))}s"
-                try:
-                    _show_arr(fr, int(thumb_w), caption)
-                except Exception as e:
-                    st.warning(f"Falha ao renderizar {caption}: {type(e).__name__}")
+                _safe_show_image(fr, int(thumb_w), caption)
 
-        # (Opcional) botão para baixar o primeiro frame como PNG para teste
+        # (Opcional) botão para baixar o primeiro frame desta página (PNG)
         f0 = subset[0] if subset else None
         if f0 and isinstance(f0.get("png_bytes"), (bytes, bytearray)):
             st.download_button(
