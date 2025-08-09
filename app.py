@@ -11,7 +11,6 @@ from zoneinfo import ZoneInfo
 import zipfile
 import re
 from pathlib import Path
-import shutil
 
 import cv2
 import numpy as np
@@ -32,28 +31,24 @@ VIDEO_COLS   = [1, 3] # ~25% da largura (altura do player fica menor)
 TZ_BR = ZoneInfo("America/Sao_Paulo")
 
 # ========= Estado =========
-K_UPLOAD    = "upload_video_v1"
-K_TECNICO   = "input_tecnico_v1"
-K_SERIE     = "input_serie_v1"
-K_CONTRATO  = "input_contrato_v1"
-K_STATE     = "state_video_meta_v1"
+K_UPLOAD = "upload_video_v1"
+K_TECNICO = "input_tecnico_v1"
+K_SERIE = "input_serie_v1"
+K_CONTRATO = "input_contrato_v1"
+K_STATE = "state_video_meta_v1"
 
-def _initial_state():
-    return {
-        "temp_dir": None,          # pasta temporária para limpeza completa
+if K_STATE not in st.session_state:
+    st.session_state[K_STATE] = {
         "filename": None,
         "temp_video_path": None,
         "duration": 0.0,
         "num_frames": 0,
-        "frames": [],              # [{arr, png_bytes, timestamp, frame_number, shape, dtype}]
+        "frames": [],  # [{arr, png_bytes, timestamp, frame_number, shape, dtype}]
         "timestamp_run": None,
         "tecnico": "",
         "serie": "",
         "contrato": "",
     }
-
-if K_STATE not in st.session_state:
-    st.session_state[K_STATE] = _initial_state()
 
 # ========= Utilidades =========
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"}
@@ -211,12 +206,14 @@ def build_zip_package(state: dict) -> tuple[bytes, str]:
     """
     Monta um .zip em memória com:
       /<CONTRATO>_<SERIE>/
-        relatorio_analise_video_tecnico.txt
+        relatorio_analise_video_tecnico.txt (inclui Técnico, Série e Contrato)
         <video_original>
         frames/frame_01.png ... frame_10.png
+    Retorna (zip_bytes, zip_filename).
     """
     serie_slug = _slugify(state.get("serie", ""))
     contrato_slug = _slugify(state.get("contrato", ""))
+    # pasta inclui contrato e série, como pedido
     folder_slug = f"{contrato_slug}_{serie_slug}".strip("_") or "pacote"
     base_dir = f"{folder_slug}/"
 
@@ -253,25 +250,24 @@ def build_zip_package(state: dict) -> tuple[bytes, str]:
                 zf.writestr(base_dir + f"frames/frame_{n:02d}.png", bytes(png))
 
     zip_bytes = buf.getvalue()
+    # nome do arquivo zip mantém também contrato+série
     zip_filename = f"pacote_{folder_slug}.zip"
     return zip_bytes, zip_filename
 
 def _reset_analysis():
-    """Limpa toda a base: apaga temp_dir, limpa session_state e recarrega."""
-    try:
-        state = st.session_state.get(K_STATE, {})
-        temp_dir = state.get("temp_dir")
-        if temp_dir and os.path.isdir(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
-    except Exception:
-        pass
-    # limpa tudo (inclui widgets)
-    st.session_state.clear()
-    # recarrega
-    try:
-        st.rerun()
-    except Exception:
-        st.experimental_rerun()
+    """Limpa estado para iniciar nova análise."""
+    st.session_state[K_STATE] = {
+        "filename": None,
+        "temp_video_path": None,
+        "duration": 0.0,
+        "num_frames": 0,
+        "frames": [],
+        "timestamp_run": None,
+        "tecnico": "",
+        "serie": "",
+        "contrato": "",
+    }
+    st.experimental_rerun()
 
 # ========= Layout (tabs fixas) =========
 tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
@@ -302,9 +298,6 @@ with tabs[0]:
         else:
             tmpdir = tempfile.mkdtemp(prefix="vid_")
             safe_name = os.path.basename(video_file.name).replace(" ", "_")
-            # guarda a pasta temp para limpeza posterior
-            st.session_state[K_STATE]["temp_dir"] = tmpdir
-
             video_path = os.path.join(tmpdir, f"{datetime.now(TZ_BR).strftime('%Y%m%d_%H%M%S')}_{safe_name}")
             with open(video_path, "wb") as f:
                 f.write(video_file.read())
@@ -327,7 +320,7 @@ with tabs[0]:
             if not frames:
                 st.error("Falha ao extrair frames. Verifique o codec do vídeo.")
             else:
-                st.session_state[K_STATE].update({
+                st.session_state[K_STATE] = {
                     "filename": safe_name,
                     "temp_video_path": video_path,
                     "duration": float(duration),
@@ -337,7 +330,7 @@ with tabs[0]:
                     "tecnico": tecnico,
                     "serie": serie,
                     "contrato": contrato,
-                })
+                }
                 st.success("Análise concluída! Vá para as abas de Pré-visualização e Frames.")
 
 # --- TAB 2: Pré-visualização ---
@@ -403,9 +396,10 @@ with tabs[3]:
             key="dl_zip_v1"
         )
 
-        # Botão NOVA ANÁLISE (sem emoji) — no final da aba Relatório
+        # ---- Nova análise ----
         st.divider()
-        if st.button("Nova análise", type="primary", key="btn_reset_from_report"):
+        if st.button("Nova análise", type="primary", use_container_width=False):
             _reset_analysis()
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
+
