@@ -30,10 +30,6 @@ THUMB_WIDTH  = 160    # miniatura padrão
 VIDEO_COLS   = [1, 3] # ~25% da largura (altura do player fica menor)
 TZ_BR = ZoneInfo("America/Sao_Paulo")
 
-# ========= Banner (opcional) =========
-st.sidebar.success("BUILD: " + datetime.now(TZ_BR).strftime("%Y-%m-%d %H:%M:%S"))
-st.sidebar.caption("Streamlit: " + st.__version__)
-
 # ========= Estado =========
 K_UPLOAD = "upload_video_v1"
 K_TECNICO = "input_tecnico_v1"
@@ -402,7 +398,7 @@ with tabs[3]:
 
         # ---- Nova análise ----
         st.divider()
-        if st.button("🆕 Nova análise", type="primary", use_container_width=False):
+        if st.button("Nova análise", type="primary", use_container_width=False):
             _reset_analysis()
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
