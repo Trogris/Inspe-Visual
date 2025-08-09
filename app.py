@@ -7,6 +7,7 @@ import io
 import base64
 import tempfile
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import zipfile
 import re
 from pathlib import Path
@@ -25,20 +26,20 @@ except Exception:
 NUM_FRAMES   = 10     # manter 10 frames
 TARGET_WIDTH = 640    # redimensionamento na extração
 GRID_COLS    = 5      # nº de colunas na grade
-PER_PAGE     = 12     # frames por página
-THUMB_WIDTH  = 160    # miniatura padrão (~metade)
-VIDEO_COLS   = [1, 3] # ~25% da largura (altura do player fica ~metade)
+THUMB_WIDTH  = 160    # miniatura padrão
+VIDEO_COLS   = [1, 3] # ~25% da largura (altura do player fica menor)
+TZ_BR = ZoneInfo("America/Sao_Paulo")
 
 # ========= Banner (opcional) =========
-st.sidebar.success("BUILD: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+st.sidebar.success("BUILD: " + datetime.now(TZ_BR).strftime("%Y-%m-%d %H:%M:%S"))
 st.sidebar.caption("Streamlit: " + st.__version__)
 
 # ========= Estado =========
 K_UPLOAD = "upload_video_v1"
 K_TECNICO = "input_tecnico_v1"
 K_SERIE = "input_serie_v1"
+K_CONTRATO = "input_contrato_v1"
 K_STATE = "state_video_meta_v1"
-K_PAGE = "pagination_page_v1"
 
 if K_STATE not in st.session_state:
     st.session_state[K_STATE] = {
@@ -50,9 +51,8 @@ if K_STATE not in st.session_state:
         "timestamp_run": None,
         "tecnico": "",
         "serie": "",
+        "contrato": "",
     }
-if K_PAGE not in st.session_state:
-    st.session_state[K_PAGE] = 1
 
 # ========= Utilidades =========
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"}
@@ -62,7 +62,7 @@ def allowed_file(name: str) -> bool:
         return False
     return os.path.splitext(name)[1].lower() in ALLOWED_EXTENSIONS
 
-def _slugify(text: str, fallback: str = "sem_serie") -> str:
+def _slugify(text: str, fallback: str = "sem_valor") -> str:
     """Transforma texto em pasta segura (sem pontuação problemática/espacos múltiplos)."""
     if not text:
         return fallback
@@ -139,9 +139,10 @@ def build_report_text(state: dict) -> str:
     lines = []
     lines.append("RELATÓRIO DE ANÁLISE DE VÍDEO TÉCNICO")
     lines.append("=" * 35)
-    lines.append(f"Data/Hora: {state.get('timestamp_run', '')}")
+    lines.append(f"Data/Hora (Brasília): {state.get('timestamp_run', '')}")
     lines.append(f"Técnico: {state.get('tecnico', '')}")
     lines.append(f"Nº de Série: {state.get('serie', '')}")
+    lines.append(f"Contrato: {state.get('contrato', '')}")
     lines.append(f"Arquivo: {state.get('filename', '')}")
     lines.append(f"Duração (s): {round(state.get('duration', 0.0), 2)}")
     lines.append("")
@@ -208,14 +209,17 @@ def _safe_show_image(fr, width_px: int, caption: str):
 def build_zip_package(state: dict) -> tuple[bytes, str]:
     """
     Monta um .zip em memória com:
-      /<SERIE>/
-        relatorio_analise_video_tecnico.txt
+      /<CONTRATO>_<SERIE>/
+        relatorio_analise_video_tecnico.txt (inclui Técnico, Série e Contrato)
         <video_original>
         frames/frame_01.png ... frame_10.png
     Retorna (zip_bytes, zip_filename).
     """
-    serie_slug = _slugify(state.get("serie", "")) or "sem_serie"
-    base_dir = f"{serie_slug}/"
+    serie_slug = _slugify(state.get("serie", ""))
+    contrato_slug = _slugify(state.get("contrato", ""))
+    # pasta inclui contrato e série, como pedido
+    folder_slug = f"{contrato_slug}_{serie_slug}".strip("_") or "pacote"
+    base_dir = f"{folder_slug}/"
 
     # Relatório
     report_txt = build_report_text(state).encode("utf-8")
@@ -250,8 +254,24 @@ def build_zip_package(state: dict) -> tuple[bytes, str]:
                 zf.writestr(base_dir + f"frames/frame_{n:02d}.png", bytes(png))
 
     zip_bytes = buf.getvalue()
-    zip_filename = f"pacote_{serie_slug}.zip"
+    # nome do arquivo zip mantém também contrato+série
+    zip_filename = f"pacote_{folder_slug}.zip"
     return zip_bytes, zip_filename
+
+def _reset_analysis():
+    """Limpa estado para iniciar nova análise."""
+    st.session_state[K_STATE] = {
+        "filename": None,
+        "temp_video_path": None,
+        "duration": 0.0,
+        "num_frames": 0,
+        "frames": [],
+        "timestamp_run": None,
+        "tecnico": "",
+        "serie": "",
+        "contrato": "",
+    }
+    st.experimental_rerun()
 
 # ========= Layout (tabs fixas) =========
 tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
@@ -259,11 +279,13 @@ tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])
 # --- TAB 1: Upload ---
 with tabs[0]:
     st.markdown("### 1) Envie o vídeo e os dados")
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         tecnico = st.text_input("Nome do Técnico", key=K_TECNICO)
     with col2:
         serie = st.text_input("Número de Série do Equipamento", key=K_SERIE)
+    with col3:
+        contrato = st.text_input("Contrato", key=K_CONTRATO)
 
     video_file = st.file_uploader(
         "Selecionar Vídeo (até 200MB)",
@@ -280,7 +302,7 @@ with tabs[0]:
         else:
             tmpdir = tempfile.mkdtemp(prefix="vid_")
             safe_name = os.path.basename(video_file.name).replace(" ", "_")
-            video_path = os.path.join(tmpdir, f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}")
+            video_path = os.path.join(tmpdir, f"{datetime.now(TZ_BR).strftime('%Y%m%d_%H%M%S')}_{safe_name}")
             with open(video_path, "wb") as f:
                 f.write(video_file.read())
 
@@ -308,16 +330,16 @@ with tabs[0]:
                     "duration": float(duration),
                     "num_frames": len(frames),
                     "frames": frames,
-                    "timestamp_run": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                    "timestamp_run": datetime.now(TZ_BR).strftime("%d/%m/%Y %H:%M:%S"),
                     "tecnico": tecnico,
                     "serie": serie,
+                    "contrato": contrato,
                 }
-                st.session_state[K_PAGE] = 1
                 st.success("Análise concluída! Vá para as abas de Pré-visualização e Frames.")
 
 # --- TAB 2: Pré-visualização ---
 with tabs[1]:
-    st.markdown("### 2) Pré-visualização do vídeo (~metade da altura)")
+    st.markdown("### 2) Pré-visualização do vídeo")
     state = st.session_state[K_STATE]
     if state["temp_video_path"] and os.path.exists(state["temp_video_path"]):
         cols = st.columns(VIDEO_COLS)  # ~25% da largura total
@@ -329,47 +351,25 @@ with tabs[1]:
 
 # --- TAB 3: Frames ---
 with tabs[2]:
-    st.markdown("### 3) Frames extraídos (miniaturas ~50%)")
+    st.markdown("### 3) Frames extraídos")
     state = st.session_state[K_STATE]
     frames = state["frames"]
     if frames:
-        # Header com paginação
-        top = st.container()
-        with top:
-            c1, c2, c3 = st.columns([1, 1, 2])
-            with c1:
-                st.write(f"Total de frames: **{len(frames)}**")
-            with c2:
-                st.write(f"Duração: **{round(state['duration'], 2)}s**")
-            with c3:
-                total_pages = max(1, (len(frames) + PER_PAGE - 1) // PER_PAGE)
-                current_page = st.session_state.get(K_PAGE, 1)
-                st.session_state[K_PAGE] = st.number_input(
-                    "Página", min_value=1, max_value=total_pages,
-                    value=min(current_page, total_pages),
-                    step=1, key="page_selector_v1"
-                )
+        # Header simples
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            st.write(f"Total de frames: **{len(frames)}**")
+        with c2:
+            st.write(f"Duração: **{round(state['duration'], 2)}s**")
 
         thumb_w = st.slider("Tamanho das miniaturas (px)", 120, 320, THUMB_WIDTH, 10, key="thumb_w_v1")
 
-        start = (st.session_state[K_PAGE] - 1) * PER_PAGE
-        end = start + PER_PAGE
-        subset = frames[start:end]
-
+        # Mostra os 10 frames
         cols = st.columns(GRID_COLS)  # grade fixa
-        for i, fr in enumerate(subset):
+        for i, fr in enumerate(frames):
             with cols[i % GRID_COLS]:
                 caption = f"Frame {int(fr.get('frame_number', i+1))} — t={str(fr.get('timestamp','?'))}s"
                 _safe_show_image(fr, int(thumb_w), caption)
-
-        # (Opcional) botão para baixar o primeiro frame desta página (PNG)
-        f0 = subset[0] if subset else None
-        if f0 and isinstance(f0.get("png_bytes"), (bytes, bytearray)):
-            st.download_button(
-                "⬇️ Baixar primeiro frame desta página (PNG)",
-                data=f0["png_bytes"], file_name=f"frame_{f0['frame_number']:02d}.png",
-                mime="image/png", key=f"dl_page_{st.session_state[K_PAGE]}"
-            )
     else:
         st.info("Nenhum frame disponível. Faça o upload na aba **Upload**.")
 
@@ -381,7 +381,7 @@ with tabs[3]:
         report = build_report_text(state)
         st.text_area("Prévia do relatório", report, height=260, key="report_preview_v1")
 
-        # .txt isolado
+        # .txt isolado (opcional)
         st.download_button(
             "📥 Baixar relatório (.txt)",
             data=report.encode("utf-8"),
@@ -390,7 +390,7 @@ with tabs[3]:
             key="dl_report_v1"
         )
 
-        # Pacote completo (.zip): relatório + frames + vídeo
+        # Pacote completo (.zip): relatório + frames + vídeo (pasta com CONTRATO + Nº de SÉRIE)
         zip_bytes, zip_name = build_zip_package(state)
         st.download_button(
             "📦 Baixar pacote completo (.zip)",
@@ -399,5 +399,10 @@ with tabs[3]:
             mime="application/zip",
             key="dl_zip_v1"
         )
+
+        # ---- Nova análise ----
+        st.divider()
+        if st.button("🆕 Nova análise", type="primary", use_container_width=False):
+            _reset_analysis()
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
