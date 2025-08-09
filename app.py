@@ -1,3 +1,6 @@
+import streamlit as st, datetime
+st.sidebar.success("BUILD: " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
+st.sidebar.caption("Streamlit: " + st.__version__)
 
 import os
 import io
