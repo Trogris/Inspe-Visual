@@ -3,6 +3,7 @@ st.set_page_config(page_title="Analisador de Vídeo Técnico", layout="wide")
 
 import os
 import io
+import base64
 import tempfile
 from datetime import datetime
 
@@ -10,15 +11,33 @@ import cv2
 import numpy as np
 from PIL import Image
 
-# =========================
-# Banner de build (opcional, para confirmar deploy)
-# =========================
+# -------------------------
+# Performance OpenCV (leve)
+# -------------------------
+try:
+    cv2.setNumThreads(2)  # 1 ou 2 ajuda em CPU compartilhada
+except Exception:
+    pass
+
+# -------------------------
+# Parâmetros fáceis de ajustar
+# -------------------------
+NUM_FRAMES   = 10     # manter 10 frames
+TARGET_WIDTH = 640    # para redimensionar os frames (pode reduzir p/ 480 se quiser)
+GRID_COLS    = 5      # nº de colunas na grade de frames
+PER_PAGE     = 12     # quantos frames por página (era 8)
+THUMB_WIDTH  = 220    # largura padrão (px) das miniaturas
+VIDEO_COLS   = [1, 2, 1]  # colunas para centralizar o player (meio menor que tela cheia)
+
+# -------------------------
+# Banner de build (prova de deploy)
+# -------------------------
 st.sidebar.success("BUILD: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 st.sidebar.caption("Streamlit: " + st.__version__)
 
-# =========================
+# -------------------------
 # Chaves e estado (estáveis)
-# =========================
+# -------------------------
 K_UPLOAD = "upload_video_v1"
 K_TECNICO = "input_tecnico_v1"
 K_SERIE = "input_serie_v1"
@@ -39,9 +58,9 @@ if K_STATE not in st.session_state:
 if K_PAGE not in st.session_state:
     st.session_state[K_PAGE] = 1
 
-# =========================
-# Funções utilitárias
-# =========================
+# -------------------------
+# Utilidades
+# -------------------------
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"}
 
 def allowed_file(name: str) -> bool:
@@ -50,8 +69,36 @@ def allowed_file(name: str) -> bool:
     ext = os.path.splitext(name)[1].lower()
     return ext in ALLOWED_EXTENSIONS
 
-def extract_frames_from_video(video_path: str, num_frames: int = 10, target_width: int = 640):
-    """Extrai N frames distribuídos ao longo do vídeo com checagens robustas."""
+def _frame_to_pil(fr):
+    """Normaliza png_bytes/jpg_bytes/base64/ndarray -> PIL.Image para evitar TypeError no st.image."""
+    data = fr.get("png_bytes") or fr.get("jpg_bytes") or fr.get("image")
+    if data is None:
+        return None
+    # base64
+    if isinstance(data, str):
+        try:
+            data = base64.b64decode(data)
+        except Exception:
+            return None
+    # bytearray/memoryview -> bytes
+    if isinstance(data, (bytearray, memoryview)):
+        data = bytes(data)
+    # bytes -> PIL
+    if isinstance(data, (bytes,)):
+        try:
+            return Image.open(io.BytesIO(data))
+        except Exception:
+            return None
+    # ndarray (RGB) -> PIL
+    if isinstance(data, np.ndarray):
+        try:
+            return Image.fromarray(data)
+        except Exception:
+            return None
+    return None
+
+def extract_frames_from_video(video_path: str, num_frames: int = NUM_FRAMES, target_width: int = TARGET_WIDTH):
+    """Extrai N frames distribuídos ao longo do vídeo com checagens robustas (mantendo PNG)."""
     frames = []
     duration = 0.0
 
@@ -69,8 +116,13 @@ def extract_frames_from_video(video_path: str, num_frames: int = 10, target_widt
     indexes = np.linspace(0, total_frames - 1, num=num_frames, dtype=int)
 
     for i, idx in enumerate(indexes):
+        # Tenta buscar por frame; se falhar, tenta por tempo (MSEC)
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
         ok, frame = cap.read()
+        if not ok or frame is None:
+            t_sec = idx / fps if fps > 0 else 0
+            cap.set(cv2.CAP_PROP_POS_MSEC, float(t_sec * 1000.0))
+            ok, frame = cap.read()
         if not ok or frame is None:
             continue
 
@@ -116,9 +168,9 @@ def build_report_text(state: dict) -> str:
         lines.append(f"- Frame {f['frame_number']:02d} | t={f['timestamp']}s")
     return "\n".join(lines)
 
-# =========================
+# -------------------------
 # Layout ESTÁVEL (tabs fixas)
-# =========================
+# -------------------------
 tabs = st.tabs(["Upload", "Pré-visualização", "Frames", "Relatório"])  # nomes fixos sempre
 
 # ---------- TAB 1: Upload ----------
@@ -131,7 +183,7 @@ with tabs[0]:
         serie = st.text_input("Número de Série do Equipamento", key=K_SERIE)
 
     video_file = st.file_uploader(
-        "Selecionar Vídeo (20-30s, até 200MB)",
+        "Selecionar Vídeo (até 200MB)",
         type=[e.strip(".") for e in ALLOWED_EXTENSIONS],
         key=K_UPLOAD
     )
@@ -149,7 +201,19 @@ with tabs[0]:
             with open(video_path, "wb") as f:
                 f.write(video_file.read())
 
-            frames, duration = extract_frames_from_video(video_path, num_frames=10)
+            # (Opcional) aviso de duração recomendada, sem bloquear
+            cap_tmp = cv2.VideoCapture(video_path)
+            fps_tmp = cap_tmp.get(cv2.CAP_PROP_FPS) or 0
+            total_tmp = int(cap_tmp.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            cap_tmp.release()
+            if fps_tmp > 0 and total_tmp > 0:
+                dur_tmp = total_tmp / fps_tmp
+                if not (20 <= dur_tmp <= 40):
+                    st.info(f"Atenção: vídeo com {dur_tmp:.2f}s (recomendado entre 20 e 40s).")
+
+            with st.spinner("Processando vídeo e extraindo frames..."):
+                frames, duration = extract_frames_from_video(video_path, num_frames=NUM_FRAMES, target_width=TARGET_WIDTH)
+
             if not frames:
                 st.error("Falha ao extrair frames. Verifique o codec do vídeo.")
             else:
@@ -171,8 +235,10 @@ with tabs[1]:
     st.markdown("### 2) Pré-visualização do vídeo")
     state = st.session_state[K_STATE]
     if state["temp_video_path"] and os.path.exists(state["temp_video_path"]):
-        st.video(state["temp_video_path"])  # componente nativo (estável)
-        st.caption(f"Arquivo: {state['filename']} — Duração: {round(state['duration'], 2)}s")
+        cols = st.columns(VIDEO_COLS)  # centraliza e reduz o player
+        with cols[len(cols)//2]:
+            st.video(state["temp_video_path"])  # componente nativo (estável)
+            st.caption(f"Arquivo: {state['filename']} — Duração: {round(state['duration'], 2)}s")
     else:
         st.info("Envie um vídeo na aba **Upload**.")
 
@@ -182,34 +248,43 @@ with tabs[2]:
     state = st.session_state[K_STATE]
     frames = state["frames"]
     if frames:
-        # Paginação estável (quatro colunas fixas)
-        per_page = 8
-        total = len(frames)
-        pages = max(1, (total + per_page - 1) // per_page)
-
+        # Controles de página e tamanho de miniatura
         top = st.container()
         with top:
             c1, c2, c3 = st.columns([1, 1, 2])
             with c1:
-                st.write(f"Total de frames: **{total}**")
+                st.write(f"Total de frames: **{len(frames)}**")
             with c2:
                 st.write(f"Duração: **{round(state['duration'], 2)}s**")
             with c3:
+                current_page = st.session_state.get(K_PAGE, 1)
                 st.session_state[K_PAGE] = st.number_input(
-                    "Página", min_value=1, max_value=pages,
-                    value=min(st.session_state[K_PAGE], pages),
+                    "Página", min_value=1,
+                    max_value=max(1, (len(frames) + PER_PAGE - 1) // PER_PAGE),
+                    value=current_page,
                     step=1, key="page_selector_v1"
                 )
 
-        start = (st.session_state[K_PAGE] - 1) * per_page
-        end = start + per_page
+        thumb_w = st.slider("Tamanho das miniaturas (px)", 140, 320, THUMB_WIDTH, 10, key="thumb_w_v1")
+
+        start = (st.session_state[K_PAGE] - 1) * PER_PAGE
+        end = start + PER_PAGE
         subset = frames[start:end]
 
-        cols = st.columns(4)  # FIXO
+        cols = st.columns(GRID_COLS)  # grade fixa
         for i, fr in enumerate(subset):
-            with cols[i % 4]:
-                st.image(fr["png_bytes"], caption=f"Frame {fr['frame_number']} — t={fr['timestamp']}s",
-                         use_container_width=True)
+            with cols[i % GRID_COLS]:
+                # Normaliza imagem para evitar TypeError
+                img = _frame_to_pil(fr)
+                if img is None:
+                    st.warning(f"Não foi possível mostrar o Frame {fr.get('frame_number', i+1)}")
+                    continue
+                st.image(
+                    img,
+                    caption=f"Frame {fr.get('frame_number', i+1)} — t={fr.get('timestamp', '?')}s",
+                    width=thumb_w,
+                    use_container_width=False
+                )
     else:
         st.info("Nenhum frame disponível. Faça o upload na aba **Upload**.")
 
