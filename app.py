@@ -33,7 +33,7 @@ TZ_BR = ZoneInfo("America/Sao_Paulo")
 
 # ========== Reset adiado via query param (executa ANTES de desenhar a UI) ==========
 # Evita "Tried to use SessionInfo before it was initialized"
-qp = st.experimental_get_query_params()
+qp = st.query_params  # <-- NOVO: propriedade, não função
 if qp.get("reset") == ["1"]:
     try:
         temp_dir = st.session_state.get("state_video_meta_v1", {}).get("temp_dir")
@@ -41,9 +41,9 @@ if qp.get("reset") == ["1"]:
             shutil.rmtree(temp_dir, ignore_errors=True)
     except Exception:
         pass
-    st.session_state.clear()                  # limpa widgets + estados
-    st.experimental_set_query_params()        # remove o ?reset=1
-    st.experimental_rerun()                   # volta para a 1ª aba (Upload)
+    st.session_state.clear()   # limpa widgets + estados
+    st.query_params.clear()    # <-- NOVO: remove ?reset=1 (e quaisquer outros)
+    st.rerun()                 # <-- NOVO: substitui st.experimental_rerun()
 
 # ========= Estado =========
 K_UPLOAD    = "upload_video_v1"
@@ -410,8 +410,9 @@ with tabs[3]:
         # ---- Nova análise (reset seguro + redirecionamento) ----
         st.divider()
         if st.button("Nova análise", type="primary", use_container_width=False, key="btn_reset_from_report"):
-            # Em vez de limpar já, marcamos o reset e rerun.
-            st.experimental_set_query_params(reset="1")
-            st.experimental_rerun()
+            # Em vez de limpar já, marcamos o reset na URL e rerun.
+            st.query_params["reset"] = "1"  # <-- NOVO: substitui experimental_set_query_params(reset="1")
+            st.rerun()                      # <-- NOVO
     else:
         st.info("Gere uma análise primeiro na aba **Upload**.")
+
